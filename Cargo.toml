@@ -5,4 +5,11 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[build-dependencies]
+lalrpop = "0.20.0"
+
 [dependencies]
+hex = "0.4.3"
+move-binary-format = { path = "/home/c1/msc/zellic/git/move/language/move-binary-format" }
+lalrpop-util = { version = "0.20.0", features = ["lexer", "unicode"] }
+
