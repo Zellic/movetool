@@ -1,0 +1,36 @@
+use move_binary_format::file_format::{SignatureToken, StructHandleIndex, TypeParameterIndex};
+
+use std::str::FromStr;
+
+grammar;
+
+Num: u16 = <s:r"[0-9]+"> => u16::from_str(s).unwrap();
+
+TokenPlus: Vec<SignatureToken> = {
+    <mut v:TokenPlus> r",\s+" <t:Token> => {
+        v.push(t);
+        v
+    },
+};
+
+pub ArrToken: Vec<SignatureToken> = {
+    "[" <v:TokenPlus> "]" => v,
+};
+
+pub Token: SignatureToken = {
+    "bool" => SignatureToken::Bool,
+    "u8" => SignatureToken::U8,
+    "u16" => SignatureToken::U16,
+    "u32" => SignatureToken::U32,
+    "u64" => SignatureToken::U64,
+    "u128" => SignatureToken::U128,
+    "u256" => SignatureToken::U256,
+    "address" => SignatureToken::Address,
+    "signer" => SignatureToken::Signer,
+    "vec<" <t:Token> ">" => SignatureToken::Vector(Box::new(t)),
+    "struct(" <i:Num> ")" => SignatureToken::Struct(StructHandleIndex::new(i as u16)),
+    "struct[" <v:ArrToken> "](" <i:Num> ")" => SignatureToken::StructInstantiation(StructHandleIndex::new(i), v),
+    "&" <t:Token> => SignatureToken::Reference(Box::new(t)),
+    "&mut " <t:Token> => SignatureToken::MutableReference(Box::new(t)),
+    "type(" <i:Num> ")" => SignatureToken::TypeParameter(i),
+};

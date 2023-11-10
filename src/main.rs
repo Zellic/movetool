@@ -1,9 +1,12 @@
 #![feature(iter_intersperse)]
 
 use move_binary_format::{CompiledModule, deserializer, file_format::*};
+use lalrpop_util::lalrpop_mod;
 
 use std::io::{self, Write};
 use std::fs;
+
+lalrpop_mod!(pub mvasm);
 
 fn ability_to_string(abilities: AbilitySet) -> String {
     let mut res = [b'-'; 4];
@@ -28,7 +31,7 @@ fn signature_token_to_string(sig: &SignatureToken) -> String {
     match sig {
         SignatureToken::Vector(tok) => format!("vec<{}>", signature_token_to_string(tok)),
         SignatureToken::Struct(idx) => format!("struct({})", idx),
-        SignatureToken::StructInstantiation(idx, vec) => format!("struct({}){}", idx, signature_to_string(vec)),
+        SignatureToken::StructInstantiation(idx, vec) => format!("struct{}({})", signature_to_string(vec), idx),
         SignatureToken::Reference(tok) => format!("&{}", signature_token_to_string(tok)),
         SignatureToken::MutableReference(tok) => format!("&mut {}", signature_token_to_string(tok)),
         SignatureToken::TypeParameter(idx) => format!("type({})", idx),

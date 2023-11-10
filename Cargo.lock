@@ -395,7 +395,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "move_as_tool"
+name = "movetool"
 version = "0.1.0"
 dependencies = [
  "hex",
