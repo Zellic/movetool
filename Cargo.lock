@@ -402,6 +402,7 @@ dependencies = [
  "lalrpop",
  "lalrpop-util",
  "move-binary-format",
+ "move-core-types",
 ]
 
 [[package]]

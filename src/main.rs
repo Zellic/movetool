@@ -1,10 +1,15 @@
 #![feature(iter_intersperse)]
+#![feature(slice_take)]
+#![feature(byte_slice_trim_ascii)]
 
 use move_binary_format::{CompiledModule, deserializer, file_format::*};
 use lalrpop_util::lalrpop_mod;
+use move_core_types::{identifier::Identifier, account_address::AccountAddress};
 
 use std::io::{self, Write};
 use std::fs;
+use std::str::FromStr;
+use hex::FromHex;
 
 lalrpop_mod!(pub mvasm);
 
@@ -25,6 +30,34 @@ fn ability_to_string(abilities: AbilitySet) -> String {
     unsafe {
         String::from_utf8_unchecked(res.to_vec())
     }
+}
+
+fn string_to_ability(buf: &[u8]) -> Option<AbilitySet> {
+    if buf.len() != 4 {
+        return None;
+    };
+    let mut res = AbilitySet::EMPTY;
+    if buf[0] == b'c' {
+        res = res | Ability::Copy;
+    } else if buf[0] != b'-' {
+        return None;
+    };
+    if buf[1] == b'd' {
+        res = res | Ability::Drop;
+    } else if buf[1] != b'-' {
+        return None;
+    };
+    if buf[2] == b's' {
+        res = res | Ability::Store;
+    } else if buf[2] != b'-' {
+        return None;
+    };
+    if buf[3] == b'k' {
+        res = res | Ability::Key;
+    } else if buf[3] != b'-' {
+        return None;
+    };
+    Some(res)
 }
 
 fn signature_token_to_string(sig: &SignatureToken) -> String {
@@ -257,19 +290,285 @@ fn print_module<T: Write>(out: &mut T, module: &CompiledModule) -> io::Result<()
                     Bytecode::CastU256 => writeln!(out, "cast_u256"),
                 }?;
             };
-        } else {
-            writeln!(out, ".no_code")?;
         };
+        writeln!(out, ".endfunc")?;
     };
     writeln!(out, ".endtable")?;
 
     Ok(())
 }
 
+fn bytes_to_number(buf: &[u8]) -> Option<u16> {
+    Some(u16::from_str(std::str::from_utf8(buf).ok()?).ok()?)
+}
+
+fn tokenize(mut buf: &[u8]) -> Vec<&[u8]> {
+    let mut res = Vec::new();
+    loop {
+        let mut it = buf.iter();
+        let Some(j) = it.position(|x| !x.is_ascii_whitespace()) else {
+            break;
+        };
+        let optk = it.position(u8::is_ascii_whitespace);
+        let k = optk.map(|k| j + k + 1).unwrap_or(buf.len());
+        let (first, rest) = buf.split_at(k);
+        let (_, tok) = first.split_at(j);
+        res.push(tok);
+        buf = rest;
+        if optk.is_none() {
+            break;
+        };
+    };
+    res
+}
+
+fn parse_module_handle(line: &[u8]) -> Option<ModuleHandle> {
+    let tok = tokenize(line);
+    if tok.len() != 2 {
+        return None;
+    };
+    let address = bytes_to_number(tok[0])?;
+    let name = bytes_to_number(tok[1])?;
+    Some(ModuleHandle {
+        address: AddressIdentifierIndex(address),
+        name: IdentifierIndex(name),
+    })
+}
+
+fn parse_module(buf: &[u8]) {
+    enum Table {
+        ModuleHandles,
+        StructHandles,
+        FunctionHandles,
+        FieldHandles,
+        FriendDecls,
+        StructDefInstantiations,
+        FunctionInstantiations,
+        FieldInstantiations,
+        Signatures,
+        Identifiers,
+        AddressIdentifiers,
+        ConstantPool,
+        Metadata,
+        StructDefs,
+        FunctionDefs,
+    };
+    enum State {
+        TypeModule,
+        Version,
+        SelfIdx,
+        Table,
+        InTable,
+    };
+
+    let mut version = 0;
+    let mut self_module_handle_idx = 0;
+    let mut module_handles = Vec::new();
+    let mut struct_handles = Vec::new();
+    let mut function_handles = Vec::new();
+    let mut field_handles = Vec::new();
+    let mut friend_decls = Vec::new();
+    let mut struct_def_instantiations = Vec::new();
+    let mut function_instantiations = Vec::new();
+    let mut field_instantiations = Vec::new();
+    let mut identifiers = Vec::new();
+    let mut address_identifiers = Vec::new();
+
+    let mut state = State::TypeModule;
+    let mut cur_table = Table::ModuleHandles;
+    let mut table_can_end = false;
+    for mut line in buf.split(|x| *x == b'\n') {
+        let sep = line.iter().position(|x| *x == b';');
+        if let Some(sep) = sep {
+            line = line.take(..sep).unwrap()
+        };
+        line = line.trim_ascii();
+        if line.is_empty() {
+            continue;
+        };
+        match state {
+            State::TypeModule => {
+                if line != b".type module" {
+                    panic!();
+                };
+                state = State::Version;
+            },
+            State::Version => {
+                let Some(version_str) = line.strip_prefix(b".version ") else {
+                    panic!();
+                };
+                version = bytes_to_number(version_str).unwrap();
+                state = State::SelfIdx;
+            },
+            State::SelfIdx => {
+                let Some(self_idx_str) = line.strip_prefix(b".self_module_handle_idx ") else {
+                    panic!();
+                };
+                self_module_handle_idx = bytes_to_number(self_idx_str).unwrap();
+                state = State::Table;
+            },
+            State::Table => {
+                let Some(table_name) = line.strip_prefix(b".table ") else {
+                    panic!();
+                };
+                cur_table = match table_name {
+                    b"module_handles" => Table::ModuleHandles,
+                    b"struct_handles" => Table::StructHandles,
+                    b"function_handles" => Table::FunctionHandles,
+                    b"field_handles" => Table::FieldHandles,
+                    b"friend_decls" => Table::FriendDecls,
+                    b"struct_def_instantiations" => Table::StructDefInstantiations,
+                    b"function_instantiations" => Table::FunctionInstantiations,
+                    b"field_instantiations" => Table::FieldInstantiations,
+                    b"signatures" => Table::Signatures,
+                    b"identifiers" => Table::Identifiers,
+                    b"address_identifiers" => Table::AddressIdentifiers,
+                    b"constant_pool" => Table::ConstantPool,
+                    b"metadata" => Table::Metadata,
+                    b"struct_defs" => Table::StructDefs,
+                    b"function_defs" => Table::FunctionDefs,
+                    _ => panic!(),
+                };
+                table_can_end = true;
+                state = State::InTable;
+            },
+            State::InTable => {
+                if line == b".endtable" {
+                    if !table_can_end {
+                        panic!();
+                    };
+                    state = State::Table;
+                } else {
+                    match cur_table {
+                        Table::ModuleHandles => {
+                            module_handles.push(parse_module_handle(line).unwrap());
+                        },
+                        Table::StructHandles => {
+                            let tok = tokenize(line);
+                            assert!(tok.len() == 3);
+                            let abilities = string_to_ability(tok[0]).unwrap();
+                            let module = bytes_to_number(tok[1]).unwrap();
+                            let name = bytes_to_number(tok[2]).unwrap();
+                            // TODO: struct type parameters
+                            struct_handles.push(StructHandle {
+                                module: ModuleHandleIndex(module),
+                                name: IdentifierIndex(name),
+                                abilities,
+                                type_parameters: Vec::new(),
+                            });
+                        },
+                        Table::FunctionHandles => {
+                            let tok = tokenize(line);
+                            assert!(tok.len() >= 4);
+                            let module = bytes_to_number(tok[0]).unwrap();
+                            let name = bytes_to_number(tok[1]).unwrap();
+                            let parameters = bytes_to_number(tok[2]).unwrap();
+                            let return_ = bytes_to_number(tok[3]).unwrap();
+                            let mut type_parameters = Vec::new();
+                            for t in &tok[4..] {
+                                let ability = string_to_ability(t).unwrap();
+                                type_parameters.push(ability);
+                            };
+                            function_handles.push(FunctionHandle {
+                                module: ModuleHandleIndex(module),
+                                name: IdentifierIndex(name),
+                                parameters: SignatureIndex(parameters),
+                                return_: SignatureIndex(return_),
+                                type_parameters,
+                            });
+                        },
+                        Table::FieldHandles => {
+                            let tok = tokenize(line);
+                            assert!(tok.len() == 2);
+                            let owner = bytes_to_number(tok[0]).unwrap();
+                            let field = bytes_to_number(tok[1]).unwrap();
+                            field_handles.push(FieldHandle {
+                                owner: StructDefinitionIndex(owner),
+                                field,
+                            });
+                        },
+                        Table::FriendDecls => {
+                            friend_decls.push(parse_module_handle(line).unwrap());
+                        },
+                        Table::StructDefInstantiations => {
+                            let tok = tokenize(line);
+                            assert!(tok.len() == 2);
+                            let def = bytes_to_number(tok[0]).unwrap();
+                            let type_parameters = bytes_to_number(tok[1]).unwrap();
+                            struct_def_instantiations.push(StructDefInstantiation {
+                                def: StructDefinitionIndex(def),
+                                type_parameters: SignatureIndex(type_parameters),
+                            });
+                        },
+                        Table::FunctionInstantiations => {
+                            let tok = tokenize(line);
+                            assert!(tok.len() == 2);
+                            let handle = bytes_to_number(tok[0]).unwrap();
+                            let type_parameters = bytes_to_number(tok[1]).unwrap();
+                            function_instantiations.push(FunctionInstantiation {
+                                handle: FunctionHandleIndex(handle),
+                                type_parameters: SignatureIndex(type_parameters),
+                            });
+                        },
+                        Table::FieldInstantiations => {
+                            let tok = tokenize(line);
+                            assert!(tok.len() == 2);
+                            let handle = bytes_to_number(tok[0]).unwrap();
+                            let type_parameters = bytes_to_number(tok[1]).unwrap();
+                            field_instantiations.push(FieldInstantiation {
+                                handle: FieldHandleIndex(handle),
+                                type_parameters: SignatureIndex(type_parameters),
+                            });
+                        },
+                        Table::Signatures => {
+                        },
+                        Table::Identifiers => {
+                            let name = std::str::from_utf8(line).unwrap();
+                            identifiers.push(Identifier::new(name));
+                        },
+                        Table::AddressIdentifiers => {
+                            let address = <[u8; 16]>::from_hex(line).unwrap();
+                            let address = AccountAddress::new(address);
+                            address_identifiers.push(address);
+                        },
+                        Table::ConstantPool => {
+                            /*
+                            let tok = tokenize(line);
+                            assert(tok.len() == 2);
+                            Vec<u8>::from_hex(tok[1]);
+                            */
+                        },
+                        Table::Metadata => {
+                        },
+                        Table::StructDefs => {
+                            let tok = tokenize(line);
+                            assert!(tok.len() == 3);
+                            assert!(tok[0] == b".struct");
+                            if tok[1] == b"native" {
+                            } else if tok[1] == b"declared" {
+                            } else {
+                                panic!();
+                            }
+                        },
+                        Table::FunctionDefs => {
+                        },
+                    }
+                };
+            },
+            _ => panic!(),
+        };
+        dbg!(&line);
+    };
+}
+
 fn main() {
-    let buf = fs::read("../testpkg/build/testpkg/bytecode_modules/Math.mv").unwrap();
-    let module = CompiledModule::deserialize(&buf[..]).unwrap();
+    //let buf = fs::read("../testpkg/build/testpkg/bytecode_modules/Math.mv").unwrap();
+    //let module = CompiledModule::deserialize(&buf[..]).unwrap();
     //dbg!(&module);
 
-    print_module(&mut std::io::stdout(), &module).unwrap();
+    //print_module(&mut std::io::stdout(), &module).unwrap();
+
+    let buf = fs::read("./test.mvasm").unwrap();
+
+    dbg!(parse_module(&buf));
 }
