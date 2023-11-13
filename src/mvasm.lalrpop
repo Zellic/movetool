@@ -7,13 +7,19 @@ grammar;
 Num: u16 = <s:r"[0-9]+"> => u16::from_str(s).unwrap();
 
 TokenPlus: Vec<SignatureToken> = {
+	<t:Token> => {
+		let mut v = Vec::new();
+		v.push(t);
+		v
+	},
     <mut v:TokenPlus> r",\s+" <t:Token> => {
         v.push(t);
         v
     },
 };
 
-pub ArrToken: Vec<SignatureToken> = {
+pub TokenArr: Vec<SignatureToken> = {
+	"[" "]" => Vec::new(),
     "[" <v:TokenPlus> "]" => v,
 };
 
@@ -29,7 +35,7 @@ pub Token: SignatureToken = {
     "signer" => SignatureToken::Signer,
     "vec<" <t:Token> ">" => SignatureToken::Vector(Box::new(t)),
     "struct(" <i:Num> ")" => SignatureToken::Struct(StructHandleIndex::new(i as u16)),
-    "struct[" <v:ArrToken> "](" <i:Num> ")" => SignatureToken::StructInstantiation(StructHandleIndex::new(i), v),
+    "struct[" <v:TokenPlus> "](" <i:Num> ")" => SignatureToken::StructInstantiation(StructHandleIndex::new(i), v),
     "&" <t:Token> => SignatureToken::Reference(Box::new(t)),
     "&mut " <t:Token> => SignatureToken::MutableReference(Box::new(t)),
     "type(" <i:Num> ")" => SignatureToken::TypeParameter(i),

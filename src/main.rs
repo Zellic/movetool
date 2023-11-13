@@ -5,6 +5,7 @@
 use move_binary_format::{CompiledModule, deserializer, file_format::*};
 use lalrpop_util::lalrpop_mod;
 use move_core_types::{identifier::Identifier, account_address::AccountAddress};
+use mvasm::*;
 
 use std::io::{self, Write};
 use std::fs;
@@ -335,7 +336,7 @@ fn parse_module_handle(line: &[u8]) -> Option<ModuleHandle> {
     })
 }
 
-fn parse_module(buf: &[u8]) {
+fn parse_module(buf: &[u8]) -> CompiledModule {
     enum Table {
         ModuleHandles,
         StructHandles,
@@ -360,6 +361,10 @@ fn parse_module(buf: &[u8]) {
         Table,
         InTable,
     };
+    enum StructDefState {
+        Def,
+        Field,
+    };
 
     let mut version = 0;
     let mut self_module_handle_idx = 0;
@@ -373,10 +378,21 @@ fn parse_module(buf: &[u8]) {
     let mut field_instantiations = Vec::new();
     let mut identifiers = Vec::new();
     let mut address_identifiers = Vec::new();
+    let mut constant_pool = Vec::new();
+    let mut struct_defs = Vec::new();
+    let mut signatures = Vec::new();
+    let mut metadata = Vec::new();
+    let mut function_defs = Vec::new();
 
     let mut state = State::TypeModule;
     let mut cur_table = Table::ModuleHandles;
+    let mut struct_def_state = StructDefState::Def;
+    let mut struct_handle = 0;
+    let mut field_definitions = Vec::new();
     let mut table_can_end = false;
+
+    let token_parser = TokenParser::new();
+    let token_arr_parser = TokenArrParser::new();
     for mut line in buf.split(|x| *x == b'\n') {
         let sep = line.iter().position(|x| *x == b';');
         if let Some(sep) = sep {
@@ -417,7 +433,10 @@ fn parse_module(buf: &[u8]) {
                     b"function_handles" => Table::FunctionHandles,
                     b"field_handles" => Table::FieldHandles,
                     b"friend_decls" => Table::FriendDecls,
-                    b"struct_def_instantiations" => Table::StructDefInstantiations,
+                    b"struct_def_instantiations" => {
+                        struct_def_state = StructDefState::Def;
+                        Table::StructDefInstantiations
+                    },
                     b"function_instantiations" => Table::FunctionInstantiations,
                     b"field_instantiations" => Table::FieldInstantiations,
                     b"signatures" => Table::Signatures,
@@ -521,10 +540,14 @@ fn parse_module(buf: &[u8]) {
                             });
                         },
                         Table::Signatures => {
+                            let signature_str = std::str::from_utf8(line).unwrap();
+                            let signature = token_arr_parser.parse(signature_str).unwrap();
+                            signatures.push(Signature(signature));
                         },
                         Table::Identifiers => {
                             let name = std::str::from_utf8(line).unwrap();
-                            identifiers.push(Identifier::new(name));
+                            let name = Identifier::new(name).unwrap();
+                            identifiers.push(name);
                         },
                         Table::AddressIdentifiers => {
                             let address = <[u8; 16]>::from_hex(line).unwrap();
@@ -532,22 +555,59 @@ fn parse_module(buf: &[u8]) {
                             address_identifiers.push(address);
                         },
                         Table::ConstantPool => {
-                            /*
                             let tok = tokenize(line);
-                            assert(tok.len() == 2);
-                            Vec<u8>::from_hex(tok[1]);
-                            */
+                            assert!(tok.len() == 2);
+                            let type_str = std::str::from_utf8(tok[0]).unwrap();
+                            let type_ = token_parser.parse(type_str).unwrap();
+                            let data = Vec::<u8>::from_hex(tok[1]).unwrap();
+                            constant_pool.push(Constant {
+                                type_,
+                                data,
+                            });
                         },
                         Table::Metadata => {
                         },
                         Table::StructDefs => {
-                            let tok = tokenize(line);
-                            assert!(tok.len() == 3);
-                            assert!(tok[0] == b".struct");
-                            if tok[1] == b"native" {
-                            } else if tok[1] == b"declared" {
-                            } else {
-                                panic!();
+                            match struct_def_state {
+                                StructDefState::Def => {
+                                    let tok = tokenize(line);
+                                    assert!(tok.len() == 3);
+                                    assert!(tok[0] == b".struct");
+
+                                    if tok[1] == b"native" {
+                                        struct_defs.push(StructDefinition {
+                                            struct_handle: StructHandleIndex(struct_handle),
+                                            field_information: StructFieldInformation::Native,
+                                        });
+                                    } else if tok[1] == b"declared" {
+                                        struct_def_state = StructDefState::Field;
+                                        table_can_end = false;
+                                    } else {
+                                        panic!();
+                                    };
+                                },
+                                StructDefState::Field => {
+                                    if line == b".endstruct" {
+                                        struct_defs.push(StructDefinition {
+                                            struct_handle: StructHandleIndex(struct_handle),
+                                            field_information: StructFieldInformation::Declared(field_definitions),
+                                        });
+                                        field_definitions = Vec::new();
+                                        struct_def_state = StructDefState::Def;
+                                        table_can_end = true;
+                                    } else {
+                                        let tok = tokenize(line);
+                                        assert!(tok.len() == 2);
+                                        assert!(*tok[0].last().unwrap() == b':');
+                                        let name = bytes_to_number(&tok[0][..tok[0].len() - 1]).unwrap();
+                                        let signature_str = std::str::from_utf8(tok[1]).unwrap();
+                                        let signature = token_parser.parse(signature_str).unwrap();
+                                        field_definitions.push(FieldDefinition {
+                                            name: IdentifierIndex(name),
+                                            signature: TypeSignature(signature),
+                                        });
+                                    };
+                                },
                             }
                         },
                         Table::FunctionDefs => {
@@ -557,8 +617,27 @@ fn parse_module(buf: &[u8]) {
             },
             _ => panic!(),
         };
-        dbg!(&line);
     };
+
+    CompiledModule {
+        version: version.into(),
+        self_module_handle_idx: ModuleHandleIndex(self_module_handle_idx),
+        module_handles,
+        struct_handles,
+        function_handles,
+        field_handles,
+        friend_decls,
+        struct_def_instantiations,
+        function_instantiations,
+        field_instantiations,
+        signatures,
+        identifiers,
+        address_identifiers,
+        constant_pool,
+        metadata,
+        struct_defs,
+        function_defs,
+    }
 }
 
 fn main() {
