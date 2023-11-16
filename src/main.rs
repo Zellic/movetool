@@ -1,6 +1,7 @@
 #![feature(iter_intersperse)]
 #![feature(slice_take)]
 #![feature(byte_slice_trim_ascii)]
+#![feature(iterator_try_collect)]
 
 use move_binary_format::{CompiledModule, deserializer, file_format::*};
 use lalrpop_util::lalrpop_mod;
@@ -109,7 +110,11 @@ fn print_module<T: Write>(out: &mut T, module: &CompiledModule) -> io::Result<()
     writeln!(out, ".table struct_handles")?;
     writeln!(out, "; abiltiies,cdsk module_idx identifier_idx")?;
     for handle in &module.struct_handles {
-        writeln!(out, "{} {} {}", ability_to_string(handle.abilities), handle.module, handle.name)?;
+        write!(out, "{} {} {}", ability_to_string(handle.abilities), handle.module, handle.name)?;
+        for ty in &handle.type_parameters {
+            write!(out, " {} {}", ability_to_string(ty.constraints), ty.is_phantom)?;
+        };
+        writeln!(out)?;
     };
     writeln!(out, ".endtable")?;
     writeln!(out, ".table function_handles")?;
@@ -202,10 +207,11 @@ fn print_module<T: Write>(out: &mut T, module: &CompiledModule) -> io::Result<()
     writeln!(out, ".table function_defs")?;
     writeln!(out, "; function_handle visibility_public_private_friend is_entry")?;
     for def in &module.function_defs {
-        writeln!(out, "{} {} {}", def.function, visibility_to_string(def.visibility), def.is_entry)?;
+        writeln!(out, ".func {} {} {}", def.function, visibility_to_string(def.visibility), def.is_entry)?;
         writeln!(out, "; indices of struct definitions acquired by this function")?;
+        write!(out, ".acquires")?;
         for res in &def.acquires_global_resources {
-            write!(out, "{} ", res)?;
+            write!(out, " {}", res)?;
         };
         writeln!(out)?;
         if let Some(code) = &def.code {
@@ -299,8 +305,16 @@ fn print_module<T: Write>(out: &mut T, module: &CompiledModule) -> io::Result<()
     Ok(())
 }
 
+fn bytes_to_number128(buf: &[u8]) -> Option<u128> {
+    if buf.len() >= 2 && &buf[..2] == b"0x" {
+        Some(u128::from_str_radix(std::str::from_utf8(&buf[2..]).ok()?, 16).ok()?)
+    } else {
+        Some(u128::from_str(std::str::from_utf8(buf).ok()?).ok()?)
+    }
+}
+
 fn bytes_to_number(buf: &[u8]) -> Option<u16> {
-    Some(u16::from_str(std::str::from_utf8(buf).ok()?).ok()?)
+    bytes_to_number128(buf)?.try_into().ok()
 }
 
 fn tokenize(mut buf: &[u8]) -> Vec<&[u8]> {
@@ -365,6 +379,12 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
         Def,
         Field,
     };
+    enum FunctionDefState {
+        FunctionSt,
+        Acquires,
+        Locals,
+        Insn,
+    };
 
     let mut version = 0;
     let mut self_module_handle_idx = 0;
@@ -386,9 +406,19 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
 
     let mut state = State::TypeModule;
     let mut cur_table = Table::ModuleHandles;
+
     let mut struct_def_state = StructDefState::Def;
     let mut struct_handle = 0;
     let mut field_definitions = Vec::new();
+
+    let mut function_def_state = FunctionDefState::FunctionSt;
+    let mut function = 0;
+    let mut visibility = Visibility::Private;
+    let mut is_entry = false;
+    let mut function_acquires = Vec::new();
+    let mut locals = 0;
+    let mut code = Vec::new();
+
     let mut table_can_end = false;
 
     let token_parser = TokenParser::new();
@@ -433,10 +463,7 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
                     b"function_handles" => Table::FunctionHandles,
                     b"field_handles" => Table::FieldHandles,
                     b"friend_decls" => Table::FriendDecls,
-                    b"struct_def_instantiations" => {
-                        struct_def_state = StructDefState::Def;
-                        Table::StructDefInstantiations
-                    },
+                    b"struct_def_instantiations" => Table::StructDefInstantiations,
                     b"function_instantiations" => Table::FunctionInstantiations,
                     b"field_instantiations" => Table::FieldInstantiations,
                     b"signatures" => Table::Signatures,
@@ -464,16 +491,24 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
                         },
                         Table::StructHandles => {
                             let tok = tokenize(line);
-                            assert!(tok.len() == 3);
+                            assert!(tok.len() >= 3 && (tok.len() - 3) % 2 == 0);
                             let abilities = string_to_ability(tok[0]).unwrap();
                             let module = bytes_to_number(tok[1]).unwrap();
                             let name = bytes_to_number(tok[2]).unwrap();
-                            // TODO: struct type parameters
+                            let type_parameters = (&tok[3..]).chunks(2).map(|toks| {
+                                let [constraints, is_phantom] = toks else {
+                                    unreachable!();
+                                };
+                                Some(StructTypeParameter {
+                                    constraints: string_to_ability(constraints)?,
+                                    is_phantom: FromStr::from_str(std::str::from_utf8(is_phantom).ok()?).ok()?,
+                                })
+                            }).try_collect().unwrap();
                             struct_handles.push(StructHandle {
                                 module: ModuleHandleIndex(module),
                                 name: IdentifierIndex(name),
                                 abilities,
-                                type_parameters: Vec::new(),
+                                type_parameters,
                             });
                         },
                         Table::FunctionHandles => {
@@ -585,6 +620,8 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
                                     } else {
                                         panic!();
                                     };
+
+                                    struct_handle = bytes_to_number(tok[2]).unwrap();
                                 },
                                 StructDefState::Field => {
                                     if line == b".endstruct" {
@@ -611,6 +648,178 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
                             }
                         },
                         Table::FunctionDefs => {
+                            match function_def_state {
+                                FunctionDefState::FunctionSt => {
+                                    let tok = tokenize(line);
+                                    assert!(tok.len() == 4);
+                                    assert!(tok[0] == b".func");
+                                    function = bytes_to_number(tok[1]).unwrap();
+                                    visibility = match tok[2] {
+                                        b"public" => Visibility::Public,
+                                        b"private" => Visibility::Private,
+                                        b"friend" => Visibility::Friend,
+                                        _ => panic!(),
+                                    };
+                                    let is_entry_str = std::str::from_utf8(tok[3]).unwrap();
+                                    is_entry = FromStr::from_str(is_entry_str).unwrap();
+                                    function_def_state = FunctionDefState::Acquires;
+                                },
+                                FunctionDefState::Acquires => {
+                                    let tok = tokenize(line);
+
+                                    assert!(tok[0] == b".acquires");
+
+                                    for t in &tok[1..] {
+                                        let def = bytes_to_number(t).unwrap();
+                                        function_acquires.push(StructDefinitionIndex(def));
+                                    };
+
+                                    function_def_state = FunctionDefState::Locals;
+                                },
+                                FunctionDefState::Locals => {
+                                    let tok = tokenize(line);
+
+                                    assert!(tok.len() == 2);
+                                    assert!(tok[0] == b".locals");
+
+                                    locals = bytes_to_number(tok[1]).unwrap();
+                                    function_def_state = FunctionDefState::Insn;
+                                },
+                                FunctionDefState::Insn => {
+                                    if line == b".endfunc" {
+                                        // TODO: super secret empty code unit
+                                        function_defs.push(FunctionDefinition {
+                                            function: FunctionHandleIndex(function),
+                                            visibility,
+                                            is_entry,
+                                            acquires_global_resources: function_acquires,
+                                            code: Some(CodeUnit {
+                                                locals: SignatureIndex(locals),
+                                                code,
+                                            })
+                                        });
+                                        function_acquires = Vec::new();
+                                        code = Vec::new();
+                                        function_def_state = FunctionDefState::FunctionSt;
+                                        continue;
+                                    };
+
+                                    let tok = tokenize(line);
+
+                                    let insn = if tok.len() == 1 {
+                                        match tok[0] {
+                                            b"pop" => Bytecode::Pop,
+                                            b"ret" => Bytecode::Ret,
+                                            b"cast_u8" => Bytecode::CastU8,
+                                            b"cast_u64" => Bytecode::CastU64,
+                                            b"cast_u128" => Bytecode::CastU128,
+                                            b"ldtrue" => Bytecode::LdTrue,
+                                            b"ldfalse" => Bytecode::LdFalse,
+                                            b"read_ref" => Bytecode::ReadRef,
+                                            b"write_ref" => Bytecode::WriteRef,
+                                            b"freeze_ref" => Bytecode::FreezeRef,
+                                            b"add" => Bytecode::Add,
+                                            b"sub" => Bytecode::Sub,
+                                            b"mul" => Bytecode::Mul,
+                                            b"mod" => Bytecode::Mod,
+                                            b"div" => Bytecode::Div,
+                                            b"bit_or" => Bytecode::BitOr,
+                                            b"bit_and" => Bytecode::BitAnd,
+                                            b"xor" => Bytecode::Xor,
+                                            b"or" => Bytecode::Or,
+                                            b"and" => Bytecode::And,
+                                            b"not" => Bytecode::Not,
+                                            b"eq" => Bytecode::Eq,
+                                            b"neq" => Bytecode::Neq,
+                                            b"lt" => Bytecode::Lt,
+                                            b"gt" => Bytecode::Gt,
+                                            b"le" => Bytecode::Le,
+                                            b"ge" => Bytecode::Ge,
+                                            b"abort" => Bytecode::Abort,
+                                            b"nop" => Bytecode::Nop,
+                                            b"shl" => Bytecode::Shl,
+                                            b"shr" => Bytecode::Shr,
+                                            b"cast_u16" => Bytecode::CastU16,
+                                            b"cast_u32" => Bytecode::CastU32,
+                                            b"cast_u256" => Bytecode::CastU256,
+                                            _ => panic!(),
+                                        }
+                                    } else if tok.len() == 2 {
+                                        match tok[0] {
+                                            b"ld256" => {
+                                                let val_str = std::str::from_utf8(tok[1]).unwrap();
+                                                let val = if val_str.len() >= 2 && &val_str[..2] == "0x" { 
+                                                    move_core_types::u256::U256::from_str_radix(&val_str[2..], 16)
+                                                } else {
+                                                    move_core_types::u256::U256::from_str(val_str)
+                                                }.unwrap();
+                                                Bytecode::LdU256(val)
+                                            },
+                                            _ => {
+                                                let val = bytes_to_number128(tok[1]).unwrap();
+                                                match tok[0] {
+                                                    b"ld64" => Bytecode::LdU64(val.try_into().unwrap()),
+                                                    b"ld128" => Bytecode::LdU128(val.try_into().unwrap()),
+                                                    b"ld32" => Bytecode::LdU32(val.try_into().unwrap()),
+                                                    _ => {
+                                                        let val: u16 = val.try_into().unwrap();
+                                                        match tok[0] {
+                                                            b"br_true" => Bytecode::BrTrue(val),
+                                                            b"br_false" => Bytecode::BrFalse(val),
+                                                            b"branch" => Bytecode::Branch(val),
+                                                            b"ld8" => Bytecode::LdU8(val.try_into().unwrap()),
+                                                            b"ldconst" => Bytecode::LdConst(ConstantPoolIndex(val)),
+                                                            b"copyloc" => Bytecode::CopyLoc(val.try_into().unwrap()),
+                                                            b"moveloc" => Bytecode::MoveLoc(val.try_into().unwrap()),
+                                                            b"stloc" => Bytecode::StLoc(val.try_into().unwrap()),
+                                                            b"call" => Bytecode::Call(FunctionHandleIndex(val)),
+                                                            b"call_generic" => Bytecode::CallGeneric(FunctionInstantiationIndex(val)),
+                                                            b"pack" => Bytecode::Pack(StructDefinitionIndex(val)),
+                                                            b"pack_generic" => Bytecode::PackGeneric(StructDefInstantiationIndex(val)),
+                                                            b"unpack" => Bytecode::Unpack(StructDefinitionIndex(val)),
+                                                            b"unpack_generic" => Bytecode::UnpackGeneric(StructDefInstantiationIndex(val)),
+                                                            b"mut_borrow_loc" => Bytecode::MutBorrowLoc(val.try_into().unwrap()),
+                                                            b"imm_borrow_loc" => Bytecode::ImmBorrowLoc(val.try_into().unwrap()),
+                                                            b"mut_borrow_field" => Bytecode::MutBorrowField(FieldHandleIndex(val)),
+                                                            b"mut_borrow_field_generic" => Bytecode::MutBorrowFieldGeneric(FieldInstantiationIndex(val)),
+                                                            b"imm_borrow_field" => Bytecode::ImmBorrowField(FieldHandleIndex(val)),
+                                                            b"imm_borrow_field_generic" => Bytecode::ImmBorrowFieldGeneric(FieldInstantiationIndex(val)),
+                                                            b"mut_borrow_global" => Bytecode::MutBorrowGlobal(StructDefinitionIndex(val)),
+                                                            b"mut_borrow_global_generic" => Bytecode::MutBorrowGlobalGeneric(StructDefInstantiationIndex(val)),
+                                                            b"imm_borrow_global" => Bytecode::ImmBorrowGlobal(StructDefinitionIndex(val)),
+                                                            b"imm_borrow_global_generic" => Bytecode::ImmBorrowGlobalGeneric(StructDefInstantiationIndex(val)),
+                                                            b"exists" => Bytecode::Exists(StructDefinitionIndex(val)),
+                                                            b"exists_generic" => Bytecode::ExistsGeneric(StructDefInstantiationIndex(val)),
+                                                            b"move_from" => Bytecode::MoveFrom(StructDefinitionIndex(val)),
+                                                            b"move_from_generic" => Bytecode::MoveFromGeneric(StructDefInstantiationIndex(val)),
+                                                            b"move_to" => Bytecode::MoveTo(StructDefinitionIndex(val)),
+                                                            b"move_to_generic" => Bytecode::MoveToGeneric(StructDefInstantiationIndex(val)),
+                                                            b"vec_len" => Bytecode::VecLen(SignatureIndex(val)),
+                                                            b"vec_imm_borrow" => Bytecode::VecImmBorrow(SignatureIndex(val)),
+                                                            b"vec_mut_borrow" => Bytecode::VecMutBorrow(SignatureIndex(val)),
+                                                            b"vec_push_back" => Bytecode::VecPushBack(SignatureIndex(val)),
+                                                            b"vec_pop_back" => Bytecode::VecPopBack(SignatureIndex(val)),
+                                                            b"vec_swap" => Bytecode::VecSwap(SignatureIndex(val)),
+                                                            b"ld16" => Bytecode::LdU16(val),
+                                                            _ => panic!(),
+                                                        }
+                                                    },
+                                                }
+                                            },
+                                        }
+                                    } else if tok.len() == 3 {
+                                        // VecPack(SignatureIndex, u64),
+                                        assert!(tok[0] == b"vec_pack");
+                                        let ty = bytes_to_number(tok[1]).unwrap();
+                                        let num = bytes_to_number128(tok[2]).unwrap();
+                                        let num: u64 = num.try_into().unwrap();
+                                        Bytecode::VecPack(SignatureIndex(ty), num)
+                                    } else {
+                                        panic!()
+                                    };
+                                    code.push(insn);
+                                },
+                            };
                         },
                     }
                 };
@@ -641,13 +850,24 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
 }
 
 fn main() {
-    //let buf = fs::read("../testpkg/build/testpkg/bytecode_modules/Math.mv").unwrap();
-    //let module = CompiledModule::deserialize(&buf[..]).unwrap();
-    //dbg!(&module);
+    let buf = fs::read("../testpkg/build/testpkg/bytecode_modules/Math.mv").unwrap();
+    let module = CompiledModule::deserialize(&buf[..]).unwrap();
+    /*
+    dbg!(&module);
 
-    //print_module(&mut std::io::stdout(), &module).unwrap();
+    print_module(&mut std::io::stdout(), &module).unwrap();
+    */
 
+    /*
     let buf = fs::read("./test.mvasm").unwrap();
 
-    dbg!(parse_module(&buf));
+    let module = parse_module(&buf);
+    dbg!(&module);
+    */
+
+    let mut nbuf = Vec::new();
+
+    module.serialize(&mut nbuf).unwrap();
+
+    fs::write("./test.mv", &nbuf).unwrap();
 }
