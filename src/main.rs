@@ -8,9 +8,10 @@ use lalrpop_util::lalrpop_mod;
 use move_core_types::{identifier::Identifier, account_address::AccountAddress};
 use mvasm::*;
 
-use std::io::{self, Write};
+use std::io::{self, Write, Read};
 use std::fs;
 use std::str::FromStr;
+use std::env::{self, args};
 use hex::FromHex;
 
 lalrpop_mod!(pub mvasm);
@@ -426,7 +427,7 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
     for mut line in buf.split(|x| *x == b'\n') {
         let sep = line.iter().position(|x| *x == b';');
         if let Some(sep) = sep {
-            line = line.take(..sep).unwrap()
+            line = <[u8]>::take(&mut line, ..sep).unwrap()
         };
         line = line.trim_ascii();
         if line.is_empty() {
@@ -849,25 +850,37 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
     }
 }
 
+fn usage(progname: &str) {
+    println!("usage: {} asm < <file>", progname);
+    println!("usage: {} dis < <file>", progname);
+}
+
 fn main() {
-    let buf = fs::read("../testpkg/build/testpkg/bytecode_modules/Math.mv").unwrap();
-    let module = CompiledModule::deserialize(&buf[..]).unwrap();
-    /*
-    dbg!(&module);
+    let args: Vec<String> = env::args().collect();
 
-    print_module(&mut std::io::stdout(), &module).unwrap();
-    */
+    if args.len() != 2 {
+        usage(&args[0][..]);
+        return;
+    };
 
-    /*
-    let buf = fs::read("./test.mvasm").unwrap();
+    let mut stdin = io::stdin();
+    let mut stdout = std::io::stdout();
 
-    let module = parse_module(&buf);
-    dbg!(&module);
-    */
-
-    let mut nbuf = Vec::new();
-
-    module.serialize(&mut nbuf).unwrap();
-
-    fs::write("./test.mv", &nbuf).unwrap();
+    match &args[1][..] {
+        "asm" => {
+            let mut buf = Vec::new();
+            stdin.read_to_end(&mut buf).unwrap();
+            let module = parse_module(&buf);
+            let mut nbuf = Vec::new();
+            module.serialize(&mut nbuf).unwrap();
+            stdout.write_all(&nbuf).unwrap();
+        },
+        "dis" => {
+            let mut buf = Vec::new();
+            stdin.read_to_end(&mut buf).unwrap();
+            let module = CompiledModule::deserialize(&buf[..]).unwrap();
+            print_module(&mut stdout, &module).unwrap();
+        },
+        _ => usage(&args[0][..]),
+    };
 }
