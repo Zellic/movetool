@@ -3,16 +3,19 @@
 #![feature(byte_slice_trim_ascii)]
 #![feature(iterator_try_collect)]
 
-use move_binary_format::{CompiledModule, deserializer, file_format::*};
-use lalrpop_util::lalrpop_mod;
-use move_core_types::{identifier::Identifier, account_address::AccountAddress};
 use mvasm::*;
+
+use move_binary_format::{CompiledModule, deserializer, file_format::*};
+use move_core_types::{identifier::Identifier, account_address::AccountAddress};
+
+use lalrpop_util::lalrpop_mod;
+use hex::FromHex;
+use thiserror::Error;
 
 use std::io::{self, Write, Read};
 use std::fs;
 use std::str::FromStr;
 use std::env::{self, args};
-use hex::FromHex;
 
 lalrpop_mod!(pub mvasm);
 
@@ -351,6 +354,38 @@ fn parse_module_handle(line: &[u8]) -> Option<ModuleHandle> {
     })
 }
 
+struct LineIterator<'a, T: Iterator<Item = &'a [u8]>> {
+    it: T,
+}
+
+impl<'a, T: Iterator<Item = &'a [u8]>> LineIterator<'a, T> {
+    fn new(it: T) -> LineIterator<'a, T> {
+        Self { it }
+    }
+}
+
+impl<'a, T: Iterator<Item = &'a [u8]>> Iterator for LineIterator<'a, T> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let mut line = self.it.next()?;
+            let sep = line.iter().position(|x| *x == b';');
+            if let Some(sep) = sep {
+                line = <[u8]>::take(&mut line, ..sep).unwrap()
+            };
+            line = line.trim_ascii();
+            if !line.is_empty() {
+                break Some(line);
+            };
+        }
+    }
+}
+
+fn line_iter_from_buf(buf: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
+    LineIterator::new(buf.split(|x| *x == b'\n')).enumerate()
+}
+
 fn parse_module(buf: &[u8]) -> CompiledModule {
     enum Table {
         ModuleHandles,
@@ -424,15 +459,8 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
 
     let token_parser = TokenParser::new();
     let token_arr_parser = TokenArrParser::new();
-    for mut line in buf.split(|x| *x == b'\n') {
-        let sep = line.iter().position(|x| *x == b';');
-        if let Some(sep) = sep {
-            line = <[u8]>::take(&mut line, ..sep).unwrap()
-        };
-        line = line.trim_ascii();
-        if line.is_empty() {
-            continue;
-        };
+    let mut line_it = line_iter_from_buf(buf);
+    for (_, mut line) in line_it {
         match state {
             State::TypeModule => {
                 if line != b".type module" {

@@ -13,4 +13,4 @@ hex = "0.4.3"
 move-binary-format = { path = "/home/c1/msc/zellic/git/move/language/move-binary-format" }
 move-core-types = { path = "/home/c1/msc/zellic/git/move/language/move-core/types" }
 lalrpop-util = { version = "0.20.0", features = ["lexer", "unicode"] }
-
+thiserror = "1.0.50"
