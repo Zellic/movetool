@@ -386,6 +386,454 @@ fn line_iter_from_buf(buf: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
     LineIterator::new(buf.split(|x| *x == b'\n')).enumerate()
 }
 
+fn table_module_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<ModuleHandle> {
+    let mut module_handles = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        module_handles.push(parse_module_handle(line).unwrap());
+    };
+    module_handles
+}
+
+fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<StructHandle> {
+    let mut struct_handles = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let tok = tokenize(line);
+        assert!(tok.len() >= 3 && (tok.len() - 3) % 2 == 0);
+        let abilities = string_to_ability(tok[0]).unwrap();
+        let module = bytes_to_number(tok[1]).unwrap();
+        let name = bytes_to_number(tok[2]).unwrap();
+        let type_parameters = (&tok[3..]).chunks(2).map(|toks| {
+            let [constraints, is_phantom] = toks else {
+                unreachable!();
+            };
+            Some(StructTypeParameter {
+                constraints: string_to_ability(constraints)?,
+                is_phantom: FromStr::from_str(std::str::from_utf8(is_phantom).ok()?).ok()?,
+            })
+        }).try_collect().unwrap();
+        struct_handles.push(StructHandle {
+            module: ModuleHandleIndex(module),
+            name: IdentifierIndex(name),
+            abilities,
+            type_parameters,
+        });
+    };
+    struct_handles
+}
+
+fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<FunctionHandle> {
+    let mut function_handles = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let tok = tokenize(line);
+        assert!(tok.len() >= 4);
+        let module = bytes_to_number(tok[0]).unwrap();
+        let name = bytes_to_number(tok[1]).unwrap();
+        let parameters = bytes_to_number(tok[2]).unwrap();
+        let return_ = bytes_to_number(tok[3]).unwrap();
+        let mut type_parameters = Vec::new();
+        for t in &tok[4..] {
+            let ability = string_to_ability(t).unwrap();
+            type_parameters.push(ability);
+        };
+        function_handles.push(FunctionHandle {
+            module: ModuleHandleIndex(module),
+            name: IdentifierIndex(name),
+            parameters: SignatureIndex(parameters),
+            return_: SignatureIndex(return_),
+            type_parameters,
+        });
+    };
+    function_handles
+}
+
+fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<FieldHandle> {
+    let mut field_handles = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let tok = tokenize(line);
+        assert!(tok.len() == 2);
+        let owner = bytes_to_number(tok[0]).unwrap();
+        let field = bytes_to_number(tok[1]).unwrap();
+        field_handles.push(FieldHandle {
+            owner: StructDefinitionIndex(owner),
+            field,
+        });
+    };
+    field_handles
+}
+
+// friend decls same as module handles
+
+
+fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<StructDefInstantiation> {
+    let mut struct_def_instantiations = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let tok = tokenize(line);
+        assert!(tok.len() == 2);
+        let def = bytes_to_number(tok[0]).unwrap();
+        let type_parameters = bytes_to_number(tok[1]).unwrap();
+        struct_def_instantiations.push(StructDefInstantiation {
+            def: StructDefinitionIndex(def),
+            type_parameters: SignatureIndex(type_parameters),
+        });
+    };
+    struct_def_instantiations
+}
+
+
+fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<FunctionInstantiation> {
+    let mut function_instantiations = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let tok = tokenize(line);
+        assert!(tok.len() == 2);
+        let handle = bytes_to_number(tok[0]).unwrap();
+        let type_parameters = bytes_to_number(tok[1]).unwrap();
+        function_instantiations.push(FunctionInstantiation {
+            handle: FunctionHandleIndex(handle),
+            type_parameters: SignatureIndex(type_parameters),
+        });
+    };
+    function_instantiations
+}
+
+fn table_signatures<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<Signature> {
+    let token_arr_parser = TokenArrParser::new();
+    let mut signatures = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let signature_str = std::str::from_utf8(line).unwrap();
+        let signature = token_arr_parser.parse(signature_str).unwrap();
+        signatures.push(Signature(signature));
+    };
+    signatures
+}
+
+fn table_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<Identifier> {
+    let mut identifiers = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let name = std::str::from_utf8(line).unwrap();
+        let name = Identifier::new(name).unwrap();
+        identifiers.push(name);
+    };
+    identifiers
+}
+
+fn table_address_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<AccountAddress> {
+    let mut address_identifiers = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let address = <[u8; 16]>::from_hex(line).unwrap();
+        let address = AccountAddress::new(address);
+        address_identifiers.push(address);
+    };
+    address_identifiers
+}
+
+fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<Constant> {
+    let token_parser = TokenParser::new();
+    let mut constant_pool = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let tok = tokenize(line);
+        assert!(tok.len() == 2);
+        let type_str = std::str::from_utf8(tok[0]).unwrap();
+        let type_ = token_parser.parse(type_str).unwrap();
+        let data = Vec::<u8>::from_hex(tok[1]).unwrap();
+        constant_pool.push(Constant {
+            type_,
+            data,
+        });
+    };
+    constant_pool
+}
+
+fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<StructDefinition> {
+    let token_parser = TokenParser::new();
+    let mut struct_defs = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let tok = tokenize(line);
+        assert!(tok.len() == 3);
+        assert!(tok[0] == b".struct");
+
+        let struct_handle = bytes_to_number(tok[2]).unwrap();
+        if tok[1] == b"native" {
+            struct_defs.push(StructDefinition {
+                struct_handle: StructHandleIndex(struct_handle),
+                field_information: StructFieldInformation::Native,
+            });
+        } else if tok[1] == b"declared" {
+            let mut field_definitions = Vec::new();
+            while let Some((_line_no, line)) = line_it.next() {
+                if line == b".endstruct" {
+                    break;
+                };
+                let tok = tokenize(line);
+                assert!(tok.len() == 2);
+                assert!(*tok[0].last().unwrap() == b':');
+                let name = bytes_to_number(&tok[0][..tok[0].len() - 1]).unwrap();
+                let signature_str = std::str::from_utf8(tok[1]).unwrap();
+                let signature = token_parser.parse(signature_str).unwrap();
+                field_definitions.push(FieldDefinition {
+                    name: IdentifierIndex(name),
+                    signature: TypeSignature(signature),
+                });
+            };
+            struct_defs.push(StructDefinition {
+                struct_handle: StructHandleIndex(struct_handle),
+                field_information: StructFieldInformation::Declared(field_definitions),
+            });
+        } else {
+            panic!();
+        };
+    };
+    struct_defs
+}
+
+fn insn_one_arg(tok: &[u8]) -> Option<Bytecode> {
+    match tok {
+        b"pop" => Some(Bytecode::Pop),
+        b"ret" => Some(Bytecode::Ret),
+        b"cast_u8" => Some(Bytecode::CastU8),
+        b"cast_u64" => Some(Bytecode::CastU64),
+        b"cast_u128" => Some(Bytecode::CastU128),
+        b"ldtrue" => Some(Bytecode::LdTrue),
+        b"ldfalse" => Some(Bytecode::LdFalse),
+        b"read_ref" => Some(Bytecode::ReadRef),
+        b"write_ref" => Some(Bytecode::WriteRef),
+        b"freeze_ref" => Some(Bytecode::FreezeRef),
+        b"add" => Some(Bytecode::Add),
+        b"sub" => Some(Bytecode::Sub),
+        b"mul" => Some(Bytecode::Mul),
+        b"mod" => Some(Bytecode::Mod),
+        b"div" => Some(Bytecode::Div),
+        b"bit_or" => Some(Bytecode::BitOr),
+        b"bit_and" => Some(Bytecode::BitAnd),
+        b"xor" => Some(Bytecode::Xor),
+        b"or" => Some(Bytecode::Or),
+        b"and" => Some(Bytecode::And),
+        b"not" => Some(Bytecode::Not),
+        b"eq" => Some(Bytecode::Eq),
+        b"neq" => Some(Bytecode::Neq),
+        b"lt" => Some(Bytecode::Lt),
+        b"gt" => Some(Bytecode::Gt),
+        b"le" => Some(Bytecode::Le),
+        b"ge" => Some(Bytecode::Ge),
+        b"abort" => Some(Bytecode::Abort),
+        b"nop" => Some(Bytecode::Nop),
+        b"shl" => Some(Bytecode::Shl),
+        b"shr" => Some(Bytecode::Shr),
+        b"cast_u16" => Some(Bytecode::CastU16),
+        b"cast_u32" => Some(Bytecode::CastU32),
+        b"cast_u256" => Some(Bytecode::CastU256),
+        _ => None,
+    }
+}
+
+fn insn_two_args(tok0: &[u8], tok1: &[u8]) -> Option<Bytecode> {
+    match tok0 {
+        b"ld256" => {
+            let val_str = std::str::from_utf8(tok1).unwrap();
+            let val = if val_str.len() >= 2 && &val_str[..2] == "0x" { 
+                move_core_types::u256::U256::from_str_radix(&val_str[2..], 16)
+            } else {
+                move_core_types::u256::U256::from_str(val_str)
+            }.unwrap();
+            Some(Bytecode::LdU256(val))
+        },
+        _ => {
+            let val = bytes_to_number128(tok1).unwrap();
+            match tok0 {
+                b"ld64" => Some(Bytecode::LdU64(val.try_into().unwrap())),
+                b"ld128" => Some(Bytecode::LdU128(val.try_into().unwrap())),
+                b"ld32" => Some(Bytecode::LdU32(val.try_into().unwrap())),
+                _ => {
+                    let val: u16 = val.try_into().unwrap();
+                    match tok0 {
+                        b"br_true" => Some(Bytecode::BrTrue(val)),
+                        b"br_false" => Some(Bytecode::BrFalse(val)),
+                        b"branch" => Some(Bytecode::Branch(val)),
+                        b"ld8" => Some(Bytecode::LdU8(val.try_into().unwrap())),
+                        b"ldconst" => Some(Bytecode::LdConst(ConstantPoolIndex(val))),
+                        b"copyloc" => Some(Bytecode::CopyLoc(val.try_into().unwrap())),
+                        b"moveloc" => Some(Bytecode::MoveLoc(val.try_into().unwrap())),
+                        b"stloc" => Some(Bytecode::StLoc(val.try_into().unwrap())),
+                        b"call" => Some(Bytecode::Call(FunctionHandleIndex(val))),
+                        b"call_generic" => Some(Bytecode::CallGeneric(FunctionInstantiationIndex(val))),
+                        b"pack" => Some(Bytecode::Pack(StructDefinitionIndex(val))),
+                        b"pack_generic" => Some(Bytecode::PackGeneric(StructDefInstantiationIndex(val))),
+                        b"unpack" => Some(Bytecode::Unpack(StructDefinitionIndex(val))),
+                        b"unpack_generic" => Some(Bytecode::UnpackGeneric(StructDefInstantiationIndex(val))),
+                        b"mut_borrow_loc" => Some(Bytecode::MutBorrowLoc(val.try_into().unwrap())),
+                        b"imm_borrow_loc" => Some(Bytecode::ImmBorrowLoc(val.try_into().unwrap())),
+                        b"mut_borrow_field" => Some(Bytecode::MutBorrowField(FieldHandleIndex(val))),
+                        b"mut_borrow_field_generic" => Some(Bytecode::MutBorrowFieldGeneric(FieldInstantiationIndex(val))),
+                        b"imm_borrow_field" => Some(Bytecode::ImmBorrowField(FieldHandleIndex(val))),
+                        b"imm_borrow_field_generic" => Some(Bytecode::ImmBorrowFieldGeneric(FieldInstantiationIndex(val))),
+                        b"mut_borrow_global" => Some(Bytecode::MutBorrowGlobal(StructDefinitionIndex(val))),
+                        b"mut_borrow_global_generic" => Some(Bytecode::MutBorrowGlobalGeneric(StructDefInstantiationIndex(val))),
+                        b"imm_borrow_global" => Some(Bytecode::ImmBorrowGlobal(StructDefinitionIndex(val))),
+                        b"imm_borrow_global_generic" => Some(Bytecode::ImmBorrowGlobalGeneric(StructDefInstantiationIndex(val))),
+                        b"exists" => Some(Bytecode::Exists(StructDefinitionIndex(val))),
+                        b"exists_generic" => Some(Bytecode::ExistsGeneric(StructDefInstantiationIndex(val))),
+                        b"move_from" => Some(Bytecode::MoveFrom(StructDefinitionIndex(val))),
+                        b"move_from_generic" => Some(Bytecode::MoveFromGeneric(StructDefInstantiationIndex(val))),
+                        b"move_to" => Some(Bytecode::MoveTo(StructDefinitionIndex(val))),
+                        b"move_to_generic" => Some(Bytecode::MoveToGeneric(StructDefInstantiationIndex(val))),
+                        b"vec_len" => Some(Bytecode::VecLen(SignatureIndex(val))),
+                        b"vec_imm_borrow" => Some(Bytecode::VecImmBorrow(SignatureIndex(val))),
+                        b"vec_mut_borrow" => Some(Bytecode::VecMutBorrow(SignatureIndex(val))),
+                        b"vec_push_back" => Some(Bytecode::VecPushBack(SignatureIndex(val))),
+                        b"vec_pop_back" => Some(Bytecode::VecPopBack(SignatureIndex(val))),
+                        b"vec_swap" => Some(Bytecode::VecSwap(SignatureIndex(val))),
+                        b"ld16" => Some(Bytecode::LdU16(val)),
+                        _ => None,
+                    }
+                },
+            }
+        },
+    }
+}
+
+fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<FunctionDefinition> {
+    let mut function_defs = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let tok = tokenize(line);
+        assert!(tok.len() == 4);
+        assert!(tok[0] == b".func");
+        let function = bytes_to_number(tok[1]).unwrap();
+        let visibility = match tok[2] {
+            b"public" => Visibility::Public,
+            b"private" => Visibility::Private,
+            b"friend" => Visibility::Friend,
+            _ => panic!(),
+        };
+        let is_entry_str = std::str::from_utf8(tok[3]).unwrap();
+        let is_entry = FromStr::from_str(is_entry_str).unwrap();
+        let mut function_acquires = Vec::new();
+
+        if let Some((_line_no, line)) = line_it.next() {
+            let tok = tokenize(line);
+
+            assert!(tok[0] == b".acquires");
+
+            for t in &tok[1..] {
+                let def = bytes_to_number(t).unwrap();
+                function_acquires.push(StructDefinitionIndex(def));
+            };
+        } else {
+            panic!();
+        };
+
+        let locals = if let Some((_line_no, line)) = line_it.next() {
+            let tok = tokenize(line);
+
+            assert!(tok.len() == 2);
+            assert!(tok[0] == b".locals");
+
+            bytes_to_number(tok[1]).unwrap()
+        } else {
+            panic!();
+        };
+
+        let mut code = Vec::new();
+
+        while let Some((_line_no, line)) = line_it.next() {
+            if line == b".endfunc" {
+                break;
+            };
+
+            let tok = tokenize(line);
+
+            let insn = if tok.len() == 1 {
+                insn_one_arg(tok[0]).unwrap()
+            } else if tok.len() == 2 {
+                insn_two_args(tok[0], tok[1]).unwrap()
+            } else if tok.len() == 3 {
+                // VecPack(SignatureIndex, u64),
+                assert!(tok[0] == b"vec_pack");
+                let ty = bytes_to_number(tok[1]).unwrap();
+                let num = bytes_to_number128(tok[2]).unwrap();
+                let num: u64 = num.try_into().unwrap();
+                Bytecode::VecPack(SignatureIndex(ty), num)
+            } else {
+                panic!()
+            };
+            code.push(insn);
+        };
+        // TODO: super secret empty code unit
+        function_defs.push(FunctionDefinition {
+            function: FunctionHandleIndex(function),
+            visibility,
+            is_entry,
+            acquires_global_resources: function_acquires,
+            code: Some(CodeUnit {
+                locals: SignatureIndex(locals),
+            code,
+            }),
+        });
+    };
+    function_defs
+}
+
+fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<FieldInstantiation> {
+    let mut field_instantiations = Vec::new();
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+        let tok = tokenize(line);
+        assert!(tok.len() == 2);
+        let handle = bytes_to_number(tok[0]).unwrap();
+        let type_parameters = bytes_to_number(tok[1]).unwrap();
+        field_instantiations.push(FieldInstantiation {
+            handle: FieldHandleIndex(handle),
+            type_parameters: SignatureIndex(type_parameters),
+        });
+    };
+    field_instantiations
+}
+
+fn table_metadata<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) {
+    // TODO metadata table
+    while let Some((_line_no, line)) = line_it.next() {
+        if line == b".endtable" {
+            break;
+        };
+    };
+}
+
 fn parse_module(buf: &[u8]) -> CompiledModule {
     enum Table {
         ModuleHandles,
@@ -441,26 +889,11 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
     let mut function_defs = Vec::new();
 
     let mut state = State::TypeModule;
-    let mut cur_table = Table::ModuleHandles;
-
-    let mut struct_def_state = StructDefState::Def;
-    let mut struct_handle = 0;
-    let mut field_definitions = Vec::new();
-
-    let mut function_def_state = FunctionDefState::FunctionSt;
-    let mut function = 0;
-    let mut visibility = Visibility::Private;
-    let mut is_entry = false;
-    let mut function_acquires = Vec::new();
-    let mut locals = 0;
-    let mut code = Vec::new();
-
-    let mut table_can_end = false;
 
     let token_parser = TokenParser::new();
     let token_arr_parser = TokenArrParser::new();
     let mut line_it = line_iter_from_buf(buf);
-    for (_, mut line) in line_it {
+    while let Some((_line_no, line)) = line_it.next() {
         match state {
             State::TypeModule => {
                 if line != b".type module" {
@@ -486,371 +919,23 @@ fn parse_module(buf: &[u8]) -> CompiledModule {
                 let Some(table_name) = line.strip_prefix(b".table ") else {
                     panic!();
                 };
-                cur_table = match table_name {
-                    b"module_handles" => Table::ModuleHandles,
-                    b"struct_handles" => Table::StructHandles,
-                    b"function_handles" => Table::FunctionHandles,
-                    b"field_handles" => Table::FieldHandles,
-                    b"friend_decls" => Table::FriendDecls,
-                    b"struct_def_instantiations" => Table::StructDefInstantiations,
-                    b"function_instantiations" => Table::FunctionInstantiations,
-                    b"field_instantiations" => Table::FieldInstantiations,
-                    b"signatures" => Table::Signatures,
-                    b"identifiers" => Table::Identifiers,
-                    b"address_identifiers" => Table::AddressIdentifiers,
-                    b"constant_pool" => Table::ConstantPool,
-                    b"metadata" => Table::Metadata,
-                    b"struct_defs" => Table::StructDefs,
-                    b"function_defs" => Table::FunctionDefs,
+                match table_name {
+                    b"module_handles" => module_handles = table_module_handles(&mut line_it),
+                    b"struct_handles" => struct_handles = table_struct_handles(&mut line_it),
+                    b"function_handles" => function_handles = table_function_handles(&mut line_it),
+                    b"field_handles" => field_handles = table_field_handles(&mut line_it),
+                    b"friend_decls" => friend_decls = table_module_handles(&mut line_it),
+                    b"struct_def_instantiations" => struct_def_instantiations = table_struct_def_instantiations(&mut line_it),
+                    b"function_instantiations" => function_instantiations = table_function_instantiations(&mut line_it),
+                    b"field_instantiations" => field_instantiations = table_field_instantiations(&mut line_it),
+                    b"signatures" => signatures = table_signatures(&mut line_it),
+                    b"identifiers" => identifiers = table_identifiers(&mut line_it),
+                    b"address_identifiers" => address_identifiers = table_address_identifiers(&mut line_it),
+                    b"constant_pool" => constant_pool = table_constant_pool(&mut line_it),
+                    b"metadata" => table_metadata(&mut line_it),
+                    b"struct_defs" => struct_defs = table_struct_defs(&mut line_it),
+                    b"function_defs" => function_defs = table_function_defs(&mut line_it),
                     _ => panic!(),
-                };
-                table_can_end = true;
-                state = State::InTable;
-            },
-            State::InTable => {
-                if line == b".endtable" {
-                    if !table_can_end {
-                        panic!();
-                    };
-                    state = State::Table;
-                } else {
-                    match cur_table {
-                        Table::ModuleHandles => {
-                            module_handles.push(parse_module_handle(line).unwrap());
-                        },
-                        Table::StructHandles => {
-                            let tok = tokenize(line);
-                            assert!(tok.len() >= 3 && (tok.len() - 3) % 2 == 0);
-                            let abilities = string_to_ability(tok[0]).unwrap();
-                            let module = bytes_to_number(tok[1]).unwrap();
-                            let name = bytes_to_number(tok[2]).unwrap();
-                            let type_parameters = (&tok[3..]).chunks(2).map(|toks| {
-                                let [constraints, is_phantom] = toks else {
-                                    unreachable!();
-                                };
-                                Some(StructTypeParameter {
-                                    constraints: string_to_ability(constraints)?,
-                                    is_phantom: FromStr::from_str(std::str::from_utf8(is_phantom).ok()?).ok()?,
-                                })
-                            }).try_collect().unwrap();
-                            struct_handles.push(StructHandle {
-                                module: ModuleHandleIndex(module),
-                                name: IdentifierIndex(name),
-                                abilities,
-                                type_parameters,
-                            });
-                        },
-                        Table::FunctionHandles => {
-                            let tok = tokenize(line);
-                            assert!(tok.len() >= 4);
-                            let module = bytes_to_number(tok[0]).unwrap();
-                            let name = bytes_to_number(tok[1]).unwrap();
-                            let parameters = bytes_to_number(tok[2]).unwrap();
-                            let return_ = bytes_to_number(tok[3]).unwrap();
-                            let mut type_parameters = Vec::new();
-                            for t in &tok[4..] {
-                                let ability = string_to_ability(t).unwrap();
-                                type_parameters.push(ability);
-                            };
-                            function_handles.push(FunctionHandle {
-                                module: ModuleHandleIndex(module),
-                                name: IdentifierIndex(name),
-                                parameters: SignatureIndex(parameters),
-                                return_: SignatureIndex(return_),
-                                type_parameters,
-                            });
-                        },
-                        Table::FieldHandles => {
-                            let tok = tokenize(line);
-                            assert!(tok.len() == 2);
-                            let owner = bytes_to_number(tok[0]).unwrap();
-                            let field = bytes_to_number(tok[1]).unwrap();
-                            field_handles.push(FieldHandle {
-                                owner: StructDefinitionIndex(owner),
-                                field,
-                            });
-                        },
-                        Table::FriendDecls => {
-                            friend_decls.push(parse_module_handle(line).unwrap());
-                        },
-                        Table::StructDefInstantiations => {
-                            let tok = tokenize(line);
-                            assert!(tok.len() == 2);
-                            let def = bytes_to_number(tok[0]).unwrap();
-                            let type_parameters = bytes_to_number(tok[1]).unwrap();
-                            struct_def_instantiations.push(StructDefInstantiation {
-                                def: StructDefinitionIndex(def),
-                                type_parameters: SignatureIndex(type_parameters),
-                            });
-                        },
-                        Table::FunctionInstantiations => {
-                            let tok = tokenize(line);
-                            assert!(tok.len() == 2);
-                            let handle = bytes_to_number(tok[0]).unwrap();
-                            let type_parameters = bytes_to_number(tok[1]).unwrap();
-                            function_instantiations.push(FunctionInstantiation {
-                                handle: FunctionHandleIndex(handle),
-                                type_parameters: SignatureIndex(type_parameters),
-                            });
-                        },
-                        Table::FieldInstantiations => {
-                            let tok = tokenize(line);
-                            assert!(tok.len() == 2);
-                            let handle = bytes_to_number(tok[0]).unwrap();
-                            let type_parameters = bytes_to_number(tok[1]).unwrap();
-                            field_instantiations.push(FieldInstantiation {
-                                handle: FieldHandleIndex(handle),
-                                type_parameters: SignatureIndex(type_parameters),
-                            });
-                        },
-                        Table::Signatures => {
-                            let signature_str = std::str::from_utf8(line).unwrap();
-                            let signature = token_arr_parser.parse(signature_str).unwrap();
-                            signatures.push(Signature(signature));
-                        },
-                        Table::Identifiers => {
-                            let name = std::str::from_utf8(line).unwrap();
-                            let name = Identifier::new(name).unwrap();
-                            identifiers.push(name);
-                        },
-                        Table::AddressIdentifiers => {
-                            let address = <[u8; 16]>::from_hex(line).unwrap();
-                            let address = AccountAddress::new(address);
-                            address_identifiers.push(address);
-                        },
-                        Table::ConstantPool => {
-                            let tok = tokenize(line);
-                            assert!(tok.len() == 2);
-                            let type_str = std::str::from_utf8(tok[0]).unwrap();
-                            let type_ = token_parser.parse(type_str).unwrap();
-                            let data = Vec::<u8>::from_hex(tok[1]).unwrap();
-                            constant_pool.push(Constant {
-                                type_,
-                                data,
-                            });
-                        },
-                        Table::Metadata => {
-                        },
-                        Table::StructDefs => {
-                            match struct_def_state {
-                                StructDefState::Def => {
-                                    let tok = tokenize(line);
-                                    assert!(tok.len() == 3);
-                                    assert!(tok[0] == b".struct");
-
-                                    if tok[1] == b"native" {
-                                        struct_defs.push(StructDefinition {
-                                            struct_handle: StructHandleIndex(struct_handle),
-                                            field_information: StructFieldInformation::Native,
-                                        });
-                                    } else if tok[1] == b"declared" {
-                                        struct_def_state = StructDefState::Field;
-                                        table_can_end = false;
-                                    } else {
-                                        panic!();
-                                    };
-
-                                    struct_handle = bytes_to_number(tok[2]).unwrap();
-                                },
-                                StructDefState::Field => {
-                                    if line == b".endstruct" {
-                                        struct_defs.push(StructDefinition {
-                                            struct_handle: StructHandleIndex(struct_handle),
-                                            field_information: StructFieldInformation::Declared(field_definitions),
-                                        });
-                                        field_definitions = Vec::new();
-                                        struct_def_state = StructDefState::Def;
-                                        table_can_end = true;
-                                    } else {
-                                        let tok = tokenize(line);
-                                        assert!(tok.len() == 2);
-                                        assert!(*tok[0].last().unwrap() == b':');
-                                        let name = bytes_to_number(&tok[0][..tok[0].len() - 1]).unwrap();
-                                        let signature_str = std::str::from_utf8(tok[1]).unwrap();
-                                        let signature = token_parser.parse(signature_str).unwrap();
-                                        field_definitions.push(FieldDefinition {
-                                            name: IdentifierIndex(name),
-                                            signature: TypeSignature(signature),
-                                        });
-                                    };
-                                },
-                            }
-                        },
-                        Table::FunctionDefs => {
-                            match function_def_state {
-                                FunctionDefState::FunctionSt => {
-                                    let tok = tokenize(line);
-                                    assert!(tok.len() == 4);
-                                    assert!(tok[0] == b".func");
-                                    function = bytes_to_number(tok[1]).unwrap();
-                                    visibility = match tok[2] {
-                                        b"public" => Visibility::Public,
-                                        b"private" => Visibility::Private,
-                                        b"friend" => Visibility::Friend,
-                                        _ => panic!(),
-                                    };
-                                    let is_entry_str = std::str::from_utf8(tok[3]).unwrap();
-                                    is_entry = FromStr::from_str(is_entry_str).unwrap();
-                                    function_def_state = FunctionDefState::Acquires;
-                                },
-                                FunctionDefState::Acquires => {
-                                    let tok = tokenize(line);
-
-                                    assert!(tok[0] == b".acquires");
-
-                                    for t in &tok[1..] {
-                                        let def = bytes_to_number(t).unwrap();
-                                        function_acquires.push(StructDefinitionIndex(def));
-                                    };
-
-                                    function_def_state = FunctionDefState::Locals;
-                                },
-                                FunctionDefState::Locals => {
-                                    let tok = tokenize(line);
-
-                                    assert!(tok.len() == 2);
-                                    assert!(tok[0] == b".locals");
-
-                                    locals = bytes_to_number(tok[1]).unwrap();
-                                    function_def_state = FunctionDefState::Insn;
-                                },
-                                FunctionDefState::Insn => {
-                                    if line == b".endfunc" {
-                                        // TODO: super secret empty code unit
-                                        function_defs.push(FunctionDefinition {
-                                            function: FunctionHandleIndex(function),
-                                            visibility,
-                                            is_entry,
-                                            acquires_global_resources: function_acquires,
-                                            code: Some(CodeUnit {
-                                                locals: SignatureIndex(locals),
-                                                code,
-                                            })
-                                        });
-                                        function_acquires = Vec::new();
-                                        code = Vec::new();
-                                        function_def_state = FunctionDefState::FunctionSt;
-                                        continue;
-                                    };
-
-                                    let tok = tokenize(line);
-
-                                    let insn = if tok.len() == 1 {
-                                        match tok[0] {
-                                            b"pop" => Bytecode::Pop,
-                                            b"ret" => Bytecode::Ret,
-                                            b"cast_u8" => Bytecode::CastU8,
-                                            b"cast_u64" => Bytecode::CastU64,
-                                            b"cast_u128" => Bytecode::CastU128,
-                                            b"ldtrue" => Bytecode::LdTrue,
-                                            b"ldfalse" => Bytecode::LdFalse,
-                                            b"read_ref" => Bytecode::ReadRef,
-                                            b"write_ref" => Bytecode::WriteRef,
-                                            b"freeze_ref" => Bytecode::FreezeRef,
-                                            b"add" => Bytecode::Add,
-                                            b"sub" => Bytecode::Sub,
-                                            b"mul" => Bytecode::Mul,
-                                            b"mod" => Bytecode::Mod,
-                                            b"div" => Bytecode::Div,
-                                            b"bit_or" => Bytecode::BitOr,
-                                            b"bit_and" => Bytecode::BitAnd,
-                                            b"xor" => Bytecode::Xor,
-                                            b"or" => Bytecode::Or,
-                                            b"and" => Bytecode::And,
-                                            b"not" => Bytecode::Not,
-                                            b"eq" => Bytecode::Eq,
-                                            b"neq" => Bytecode::Neq,
-                                            b"lt" => Bytecode::Lt,
-                                            b"gt" => Bytecode::Gt,
-                                            b"le" => Bytecode::Le,
-                                            b"ge" => Bytecode::Ge,
-                                            b"abort" => Bytecode::Abort,
-                                            b"nop" => Bytecode::Nop,
-                                            b"shl" => Bytecode::Shl,
-                                            b"shr" => Bytecode::Shr,
-                                            b"cast_u16" => Bytecode::CastU16,
-                                            b"cast_u32" => Bytecode::CastU32,
-                                            b"cast_u256" => Bytecode::CastU256,
-                                            _ => panic!(),
-                                        }
-                                    } else if tok.len() == 2 {
-                                        match tok[0] {
-                                            b"ld256" => {
-                                                let val_str = std::str::from_utf8(tok[1]).unwrap();
-                                                let val = if val_str.len() >= 2 && &val_str[..2] == "0x" { 
-                                                    move_core_types::u256::U256::from_str_radix(&val_str[2..], 16)
-                                                } else {
-                                                    move_core_types::u256::U256::from_str(val_str)
-                                                }.unwrap();
-                                                Bytecode::LdU256(val)
-                                            },
-                                            _ => {
-                                                let val = bytes_to_number128(tok[1]).unwrap();
-                                                match tok[0] {
-                                                    b"ld64" => Bytecode::LdU64(val.try_into().unwrap()),
-                                                    b"ld128" => Bytecode::LdU128(val.try_into().unwrap()),
-                                                    b"ld32" => Bytecode::LdU32(val.try_into().unwrap()),
-                                                    _ => {
-                                                        let val: u16 = val.try_into().unwrap();
-                                                        match tok[0] {
-                                                            b"br_true" => Bytecode::BrTrue(val),
-                                                            b"br_false" => Bytecode::BrFalse(val),
-                                                            b"branch" => Bytecode::Branch(val),
-                                                            b"ld8" => Bytecode::LdU8(val.try_into().unwrap()),
-                                                            b"ldconst" => Bytecode::LdConst(ConstantPoolIndex(val)),
-                                                            b"copyloc" => Bytecode::CopyLoc(val.try_into().unwrap()),
-                                                            b"moveloc" => Bytecode::MoveLoc(val.try_into().unwrap()),
-                                                            b"stloc" => Bytecode::StLoc(val.try_into().unwrap()),
-                                                            b"call" => Bytecode::Call(FunctionHandleIndex(val)),
-                                                            b"call_generic" => Bytecode::CallGeneric(FunctionInstantiationIndex(val)),
-                                                            b"pack" => Bytecode::Pack(StructDefinitionIndex(val)),
-                                                            b"pack_generic" => Bytecode::PackGeneric(StructDefInstantiationIndex(val)),
-                                                            b"unpack" => Bytecode::Unpack(StructDefinitionIndex(val)),
-                                                            b"unpack_generic" => Bytecode::UnpackGeneric(StructDefInstantiationIndex(val)),
-                                                            b"mut_borrow_loc" => Bytecode::MutBorrowLoc(val.try_into().unwrap()),
-                                                            b"imm_borrow_loc" => Bytecode::ImmBorrowLoc(val.try_into().unwrap()),
-                                                            b"mut_borrow_field" => Bytecode::MutBorrowField(FieldHandleIndex(val)),
-                                                            b"mut_borrow_field_generic" => Bytecode::MutBorrowFieldGeneric(FieldInstantiationIndex(val)),
-                                                            b"imm_borrow_field" => Bytecode::ImmBorrowField(FieldHandleIndex(val)),
-                                                            b"imm_borrow_field_generic" => Bytecode::ImmBorrowFieldGeneric(FieldInstantiationIndex(val)),
-                                                            b"mut_borrow_global" => Bytecode::MutBorrowGlobal(StructDefinitionIndex(val)),
-                                                            b"mut_borrow_global_generic" => Bytecode::MutBorrowGlobalGeneric(StructDefInstantiationIndex(val)),
-                                                            b"imm_borrow_global" => Bytecode::ImmBorrowGlobal(StructDefinitionIndex(val)),
-                                                            b"imm_borrow_global_generic" => Bytecode::ImmBorrowGlobalGeneric(StructDefInstantiationIndex(val)),
-                                                            b"exists" => Bytecode::Exists(StructDefinitionIndex(val)),
-                                                            b"exists_generic" => Bytecode::ExistsGeneric(StructDefInstantiationIndex(val)),
-                                                            b"move_from" => Bytecode::MoveFrom(StructDefinitionIndex(val)),
-                                                            b"move_from_generic" => Bytecode::MoveFromGeneric(StructDefInstantiationIndex(val)),
-                                                            b"move_to" => Bytecode::MoveTo(StructDefinitionIndex(val)),
-                                                            b"move_to_generic" => Bytecode::MoveToGeneric(StructDefInstantiationIndex(val)),
-                                                            b"vec_len" => Bytecode::VecLen(SignatureIndex(val)),
-                                                            b"vec_imm_borrow" => Bytecode::VecImmBorrow(SignatureIndex(val)),
-                                                            b"vec_mut_borrow" => Bytecode::VecMutBorrow(SignatureIndex(val)),
-                                                            b"vec_push_back" => Bytecode::VecPushBack(SignatureIndex(val)),
-                                                            b"vec_pop_back" => Bytecode::VecPopBack(SignatureIndex(val)),
-                                                            b"vec_swap" => Bytecode::VecSwap(SignatureIndex(val)),
-                                                            b"ld16" => Bytecode::LdU16(val),
-                                                            _ => panic!(),
-                                                        }
-                                                    },
-                                                }
-                                            },
-                                        }
-                                    } else if tok.len() == 3 {
-                                        // VecPack(SignatureIndex, u64),
-                                        assert!(tok[0] == b"vec_pack");
-                                        let ty = bytes_to_number(tok[1]).unwrap();
-                                        let num = bytes_to_number128(tok[2]).unwrap();
-                                        let num: u64 = num.try_into().unwrap();
-                                        Bytecode::VecPack(SignatureIndex(ty), num)
-                                    } else {
-                                        panic!()
-                                    };
-                                    code.push(insn);
-                                },
-                            };
-                        },
-                    }
                 };
             },
             _ => panic!(),
@@ -909,6 +994,6 @@ fn main() {
             let module = CompiledModule::deserialize(&buf[..]).unwrap();
             print_module(&mut stdout, &module).unwrap();
         },
-        _ => usage(&args[0][..]),
+       _ => usage(&args[0][..]),
     };
 }
