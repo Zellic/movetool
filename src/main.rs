@@ -358,12 +358,6 @@ struct LineIterator<'a, T: Iterator<Item = &'a [u8]>> {
     it: T,
 }
 
-impl<'a, T: Iterator<Item = &'a [u8]>> LineIterator<'a, T> {
-    fn new(it: T) -> LineIterator<'a, T> {
-        Self { it }
-    }
-}
-
 impl<'a, T: Iterator<Item = &'a [u8]>> Iterator for LineIterator<'a, T> {
     type Item = &'a [u8];
 
@@ -383,7 +377,9 @@ impl<'a, T: Iterator<Item = &'a [u8]>> Iterator for LineIterator<'a, T> {
 }
 
 fn line_iter_from_buf(buf: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
-    LineIterator::new(buf.split(|x| *x == b'\n')).enumerate()
+    LineIterator {
+        it: buf.split(|x| *x == b'\n'),
+    }.enumerate()
 }
 
 fn table_module_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<ModuleHandle> {
@@ -474,7 +470,6 @@ fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
 }
 
 // friend decls same as module handles
-
 
 fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<StructDefInstantiation> {
     let mut struct_def_instantiations = Vec::new();
