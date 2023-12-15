@@ -3,10 +3,37 @@ use crate::mvasm::*;
 use move_binary_format::{CompiledModule, file_format::*};
 use move_core_types::{identifier::Identifier, account_address::AccountAddress};
 
-use thiserror::Error;
 use hex::FromHex;
 
 use std::str::FromStr;
+use std::error::Error;
+
+enum MoveAssemblyErrorInner {
+    InvalidAbility,
+    InvalidNumber,
+    WrongNumberOfTokens {found: usize, expected: usize},
+    StructHandleWrongNumberOfTokens {found: usize},
+    NotEnoughTokens {found: usize, min: usize},
+    NotUTF8,
+    InvalidStructType,
+    NonStructInTable,
+    InvalidInstruction,
+    InvalidBoolean,
+    ExpectedToken {found: Vec<u8>, expected: &'static [u8]},
+    ValueTooLarge,
+    ExpectedAcquires,
+    ExpectedLocals,
+    InvalidVisibility {found: Vec<u8>},
+    InvalidIdentifier,
+    InvalidAddress,
+    InvalidConstantValue,
+    FieldNameSepNotFound,
+};
+
+pub struct MoveAssemblyError {
+    inner: MoveAssemblyErrorInner,
+    line_no: usize,
+};
 
 struct LineIterator<'a, T: Iterator<Item = &'a [u8]>> {
     it: T,
@@ -44,11 +71,15 @@ fn bytes_to_number128(buf: &[u8]) -> Option<u128> {
     }
 }
 
-fn bytes_to_number(buf: &[u8]) -> Option<u16> {
+fn do_bytes_to_number(buf: &[u8]) -> Option<u16> {
     bytes_to_number128(buf)?.try_into().ok()
 }
 
-fn string_to_ability(buf: &[u8]) -> Option<AbilitySet> {
+fn bytes_to_number(buf: &[u8]) -> Result<u16, MoveAssemblyErrorInner> {
+    do_bytes_to_number(buf).ok_or(MoveAssemblyErrorInner::InvalidNumber)
+}
+
+fn do_string_to_ability(buf: &[u8]) -> Option<AbilitySet> {
     if buf.len() != 4 {
         return None;
     };
@@ -76,6 +107,50 @@ fn string_to_ability(buf: &[u8]) -> Option<AbilitySet> {
     Some(res)
 }
 
+fn string_to_ability(buf: &[u8]) -> Result<AbilitySet, MoveAssemblyErrorInner> {
+    do_string_to_ability(buf).ok_or(MoveAssemblyErrorInner::InvalidAbility)
+}
+
+fn do_bytes_to_bool(buf: &[u8]) -> Option<bool> {
+    FromStr::from_str(std::str::from_utf8(buf).ok()?).ok()?
+}
+
+fn bytes_to_bool(buf: &[u8]) -> Result<bool, MoveAssemblyErrorInner> {
+    do_bytes_to_bool(buf).ok_or(MoveAssemblyErrorInner::InvalidBoolean)
+}
+
+fn expect_num_args_eq<T>(tok: &Vec<T>, num: usize) -> Result<(), MoveAssemblyErrorInner> {
+    if tok.len() == num {
+        Ok(())
+    } else {
+        Err(MoveAssemblyErrorInner::WrongNumberOfArgs {found: tok.len(), expected: num})
+    }
+}
+
+fn expect_token(buf: &[u8], expected: &'static [u8]) -> Result<(), MoveAssemblyErrorInner> {
+    if buf == expected {
+        Ok(())
+    } else {
+        Err(MoveAssemblyErrorInner::ExpectedToken {found: buf.as_vec(), expected})
+    }
+}
+
+fn try_into<T>(x: u128) -> Result<T, MoveAssemblyErrorInner> {
+    if let Ok(x) = x.try_into() {
+        x
+    } else {
+        Err(MoveAssemblyErrorInner::ValueTooLarge)
+    }
+}
+
+fn from_utf8(buf: &[u8]) -> Result<&str, MoveAssemblyErrorInner> {
+    if let Ok(res) = std::str::from_utf8(buf) {
+        res
+    } else {
+        Err(MoveAssemblyErrorInner::NotUTF8)
+    }
+}
+
 fn tokenize(mut buf: &[u8]) -> Vec<&[u8]> {
     let mut res = Vec::new();
     loop {
@@ -96,20 +171,22 @@ fn tokenize(mut buf: &[u8]) -> Vec<&[u8]> {
     res
 }
 
-fn parse_module_handle(line: &[u8]) -> Option<ModuleHandle> {
+fn parse_module_handle(line: &[u8]) -> Result<ModuleHandle, MoveAssemblyErrorInner> {
     let tok = tokenize(line);
-    if tok.len() != 2 {
-        return None;
+    expect_num_args_eq(&tok, 2)?;
+    let address = bytes_to_number(tok[0]) else {
+        return MoveAssemblyErrorInner::InvalidNumber;
     };
-    let address = bytes_to_number(tok[0])?;
-    let name = bytes_to_number(tok[1])?;
+    let name = bytes_to_number(tok[1]) else {
+        return MoveAssemblyErrorInner::InvalidNumber;
+    };
     Some(ModuleHandle {
         address: AddressIdentifierIndex(address),
         name: IdentifierIndex(name),
     })
 }
 
-fn insn_one_arg(tok: &[u8]) -> Option<Bytecode> {
+fn insn_zero_args(tok: &[u8]) -> Option<Bytecode> {
     match tok {
         b"pop" => Some(Bytecode::Pop),
         b"ret" => Some(Bytecode::Ret),
@@ -149,64 +226,68 @@ fn insn_one_arg(tok: &[u8]) -> Option<Bytecode> {
     }
 }
 
-fn insn_two_args(tok0: &[u8], tok1: &[u8]) -> Option<Bytecode> {
+fn insn_one_arg(tok0: &[u8], tok1: &[u8]) -> Result<Bytecode, MoveAssemblyErrorInner> {
     match tok0 {
         b"ld256" => {
-            let val_str = std::str::from_utf8(tok1).unwrap();
-            let val = if val_str.len() >= 2 && &val_str[..2] == "0x" { 
+            let val_str = from_utf8(tok1)?;
+            let Ok(val) = if val_str.len() >= 2 && &val_str[..2] == "0x" { 
                 move_core_types::u256::U256::from_str_radix(&val_str[2..], 16)
             } else {
                 move_core_types::u256::U256::from_str(val_str)
-            }.unwrap();
-            Some(Bytecode::LdU256(val))
+            } else {
+                return Err(MoveAssemblyErrorInner::InvalidNumber);
+            };
+            Ok(Bytecode::LdU256(val))
         },
         _ => {
-            let val = bytes_to_number128(tok1).unwrap();
+            let val = bytes_to_number128(tok1) else {
+                return Err(MoveAssemblyErrorInner::InvalidNumber);
+            };
             match tok0 {
-                b"ld64" => Some(Bytecode::LdU64(val.try_into().unwrap())),
-                b"ld128" => Some(Bytecode::LdU128(val.try_into().unwrap())),
-                b"ld32" => Some(Bytecode::LdU32(val.try_into().unwrap())),
+                b"ld64" => Ok(Bytecode::LdU64(try_into(val)?)),
+                b"ld128" => Ok(Bytecode::LdU128(try_into(val)?)),
+                b"ld32" => Ok(Bytecode::LdU32(try_into(val)?)),
                 _ => {
-                    let val: u16 = val.try_into().unwrap();
+                    let val: u16 = try_into(val)?;
                     match tok0 {
-                        b"br_true" => Some(Bytecode::BrTrue(val)),
-                        b"br_false" => Some(Bytecode::BrFalse(val)),
-                        b"branch" => Some(Bytecode::Branch(val)),
-                        b"ld8" => Some(Bytecode::LdU8(val.try_into().unwrap())),
-                        b"ldconst" => Some(Bytecode::LdConst(ConstantPoolIndex(val))),
-                        b"copyloc" => Some(Bytecode::CopyLoc(val.try_into().unwrap())),
-                        b"moveloc" => Some(Bytecode::MoveLoc(val.try_into().unwrap())),
-                        b"stloc" => Some(Bytecode::StLoc(val.try_into().unwrap())),
-                        b"call" => Some(Bytecode::Call(FunctionHandleIndex(val))),
-                        b"call_generic" => Some(Bytecode::CallGeneric(FunctionInstantiationIndex(val))),
-                        b"pack" => Some(Bytecode::Pack(StructDefinitionIndex(val))),
-                        b"pack_generic" => Some(Bytecode::PackGeneric(StructDefInstantiationIndex(val))),
-                        b"unpack" => Some(Bytecode::Unpack(StructDefinitionIndex(val))),
-                        b"unpack_generic" => Some(Bytecode::UnpackGeneric(StructDefInstantiationIndex(val))),
-                        b"mut_borrow_loc" => Some(Bytecode::MutBorrowLoc(val.try_into().unwrap())),
-                        b"imm_borrow_loc" => Some(Bytecode::ImmBorrowLoc(val.try_into().unwrap())),
-                        b"mut_borrow_field" => Some(Bytecode::MutBorrowField(FieldHandleIndex(val))),
-                        b"mut_borrow_field_generic" => Some(Bytecode::MutBorrowFieldGeneric(FieldInstantiationIndex(val))),
-                        b"imm_borrow_field" => Some(Bytecode::ImmBorrowField(FieldHandleIndex(val))),
-                        b"imm_borrow_field_generic" => Some(Bytecode::ImmBorrowFieldGeneric(FieldInstantiationIndex(val))),
-                        b"mut_borrow_global" => Some(Bytecode::MutBorrowGlobal(StructDefinitionIndex(val))),
-                        b"mut_borrow_global_generic" => Some(Bytecode::MutBorrowGlobalGeneric(StructDefInstantiationIndex(val))),
-                        b"imm_borrow_global" => Some(Bytecode::ImmBorrowGlobal(StructDefinitionIndex(val))),
-                        b"imm_borrow_global_generic" => Some(Bytecode::ImmBorrowGlobalGeneric(StructDefInstantiationIndex(val))),
-                        b"exists" => Some(Bytecode::Exists(StructDefinitionIndex(val))),
-                        b"exists_generic" => Some(Bytecode::ExistsGeneric(StructDefInstantiationIndex(val))),
-                        b"move_from" => Some(Bytecode::MoveFrom(StructDefinitionIndex(val))),
-                        b"move_from_generic" => Some(Bytecode::MoveFromGeneric(StructDefInstantiationIndex(val))),
-                        b"move_to" => Some(Bytecode::MoveTo(StructDefinitionIndex(val))),
-                        b"move_to_generic" => Some(Bytecode::MoveToGeneric(StructDefInstantiationIndex(val))),
-                        b"vec_len" => Some(Bytecode::VecLen(SignatureIndex(val))),
-                        b"vec_imm_borrow" => Some(Bytecode::VecImmBorrow(SignatureIndex(val))),
-                        b"vec_mut_borrow" => Some(Bytecode::VecMutBorrow(SignatureIndex(val))),
-                        b"vec_push_back" => Some(Bytecode::VecPushBack(SignatureIndex(val))),
-                        b"vec_pop_back" => Some(Bytecode::VecPopBack(SignatureIndex(val))),
-                        b"vec_swap" => Some(Bytecode::VecSwap(SignatureIndex(val))),
-                        b"ld16" => Some(Bytecode::LdU16(val)),
-                        _ => None,
+                        b"br_true" => Ok(Bytecode::BrTrue(val)),
+                        b"br_false" => Ok(Bytecode::BrFalse(val)),
+                        b"branch" => Ok(Bytecode::Branch(val)),
+                        b"ld8" => Ok(Bytecode::LdU8(try_into(val)?)),
+                        b"ldconst" => Ok(Bytecode::LdConst(ConstantPoolIndex(val))),
+                        b"copyloc" => Ok(Bytecode::CopyLoc(try_into(val)?)),
+                        b"moveloc" => Ok(Bytecode::MoveLoc(try_into(val)?)),
+                        b"stloc" => Ok(Bytecode::StLoc(try_into(val)?)),
+                        b"call" => Ok(Bytecode::Call(FunctionHandleIndex(val))),
+                        b"call_generic" => Ok(Bytecode::CallGeneric(FunctionInstantiationIndex(val))),
+                        b"pack" => Ok(Bytecode::Pack(StructDefinitionIndex(val))),
+                        b"pack_generic" => Ok(Bytecode::PackGeneric(StructDefInstantiationIndex(val))),
+                        b"unpack" => Ok(Bytecode::Unpack(StructDefinitionIndex(val))),
+                        b"unpack_generic" => Ok(Bytecode::UnpackGeneric(StructDefInstantiationIndex(val))),
+                        b"mut_borrow_loc" => Ok(Bytecode::MutBorrowLoc(try_into(val)?)),
+                        b"imm_borrow_loc" => Ok(Bytecode::ImmBorrowLoc(try_into(val)?)),
+                        b"mut_borrow_field" => Ok(Bytecode::MutBorrowField(FieldHandleIndex(val))),
+                        b"mut_borrow_field_generic" => Ok(Bytecode::MutBorrowFieldGeneric(FieldInstantiationIndex(val))),
+                        b"imm_borrow_field" => Ok(Bytecode::ImmBorrowField(FieldHandleIndex(val))),
+                        b"imm_borrow_field_generic" => Ok(Bytecode::ImmBorrowFieldGeneric(FieldInstantiationIndex(val))),
+                        b"mut_borrow_global" => Ok(Bytecode::MutBorrowGlobal(StructDefinitionIndex(val))),
+                        b"mut_borrow_global_generic" => Ok(Bytecode::MutBorrowGlobalGeneric(StructDefInstantiationIndex(val))),
+                        b"imm_borrow_global" => Ok(Bytecode::ImmBorrowGlobal(StructDefinitionIndex(val))),
+                        b"imm_borrow_global_generic" => Ok(Bytecode::ImmBorrowGlobalGeneric(StructDefInstantiationIndex(val))),
+                        b"exists" => Ok(Bytecode::Exists(StructDefinitionIndex(val))),
+                        b"exists_generic" => Ok(Bytecode::ExistsGeneric(StructDefInstantiationIndex(val))),
+                        b"move_from" => Ok(Bytecode::MoveFrom(StructDefinitionIndex(val))),
+                        b"move_from_generic" => Ok(Bytecode::MoveFromGeneric(StructDefInstantiationIndex(val))),
+                        b"move_to" => Ok(Bytecode::MoveTo(StructDefinitionIndex(val))),
+                        b"move_to_generic" => Ok(Bytecode::MoveToGeneric(StructDefInstantiationIndex(val))),
+                        b"vec_len" => Ok(Bytecode::VecLen(SignatureIndex(val))),
+                        b"vec_imm_borrow" => Ok(Bytecode::VecImmBorrow(SignatureIndex(val))),
+                        b"vec_mut_borrow" => Ok(Bytecode::VecMutBorrow(SignatureIndex(val))),
+                        b"vec_push_back" => Ok(Bytecode::VecPushBack(SignatureIndex(val))),
+                        b"vec_pop_back" => Ok(Bytecode::VecPopBack(SignatureIndex(val))),
+                        b"vec_swap" => Ok(Bytecode::VecSwap(SignatureIndex(val))),
+                        b"ld16" => Ok(Bytecode::LdU16(val)),
+                        _ => Err(MoveAssemblyErrorInner::InvalidInstruction),
                     }
                 },
             }
@@ -214,37 +295,39 @@ fn insn_two_args(tok0: &[u8], tok1: &[u8]) -> Option<Bytecode> {
     }
 }
 
-fn table_module_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<ModuleHandle> {
+fn table_module_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<ModuleHandle>, MoveAssemblyErrorInner> {
     let mut module_handles = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
-        module_handles.push(parse_module_handle(line).unwrap());
+        module_handles.push(parse_module_handle(line)?);
     };
     module_handles
 }
 
-fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<StructHandle> {
+fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<StructHandle>, MoveAssemblyErrorInner> {
     let mut struct_handles = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
         let tok = tokenize(line);
-        assert!(tok.len() >= 3 && (tok.len() - 3) % 2 == 0);
-        let abilities = string_to_ability(tok[0]).unwrap();
-        let module = bytes_to_number(tok[1]).unwrap();
-        let name = bytes_to_number(tok[2]).unwrap();
+        if !(tok.len() >= 3 && (tok.len() - 3) % 2 == 0) {
+            return Err(MoveAssemblyErrorInner::StructHandleWrongNumberOfTokens {found: tok.len()});
+        };
+        let abilities = string_to_ability(tok[0])?;
+        let module = bytes_to_number(tok[1])?;
+        let name = bytes_to_number(tok[2])?;
         let type_parameters = (&tok[3..]).chunks(2).map(|toks| {
             let [constraints, is_phantom] = toks else {
                 unreachable!();
             };
-            Some(StructTypeParameter {
+            Ok(StructTypeParameter {
                 constraints: string_to_ability(constraints)?,
-                is_phantom: FromStr::from_str(std::str::from_utf8(is_phantom).ok()?).ok()?,
+                is_phantom: bytes_to_bool(is_phantom)?,
             })
-        }).try_collect().unwrap();
+        }).try_collect()?;
         struct_handles.push(StructHandle {
             module: ModuleHandleIndex(module),
             name: IdentifierIndex(name),
@@ -255,21 +338,23 @@ fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])
     struct_handles
 }
 
-fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<FunctionHandle> {
+fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FunctionHandle>, MoveAssemblyErrorInner> {
     let mut function_handles = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
         let tok = tokenize(line);
-        assert!(tok.len() >= 4);
-        let module = bytes_to_number(tok[0]).unwrap();
-        let name = bytes_to_number(tok[1]).unwrap();
-        let parameters = bytes_to_number(tok[2]).unwrap();
-        let return_ = bytes_to_number(tok[3]).unwrap();
+        if !(tok.len() >= 4) {
+            return Err(MoveAssemblyErrorInner::NotEnoughTokens {found: tok.len(), min: 4});
+        };
+        let module = bytes_to_number(tok[0])?;
+        let name = bytes_to_number(tok[1])?;
+        let parameters = bytes_to_number(tok[2])?;
+        let return_ = bytes_to_number(tok[3])?;
         let mut type_parameters = Vec::new();
         for t in &tok[4..] {
-            let ability = string_to_ability(t).unwrap();
+            let ability = string_to_ability(t)?;
             type_parameters.push(ability);
         };
         function_handles.push(FunctionHandle {
@@ -283,16 +368,16 @@ fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8
     function_handles
 }
 
-fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<FieldHandle> {
+fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FieldHandle>, MoveAssemblyErrorInner> {
     let mut field_handles = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
         let tok = tokenize(line);
-        assert!(tok.len() == 2);
-        let owner = bytes_to_number(tok[0]).unwrap();
-        let field = bytes_to_number(tok[1]).unwrap();
+        expect_num_args_eq(&tok, 2)?;
+        let owner = bytes_to_number(tok[0])?;
+        let field = bytes_to_number(tok[1])?;
         field_handles.push(FieldHandle {
             owner: StructDefinitionIndex(owner),
             field,
@@ -301,48 +386,47 @@ fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
     field_handles
 }
 
-fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<FunctionDefinition> {
+fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FunctionDefinition>, MoveAssemblyErrorInner> {
     let mut function_defs = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
         let tok = tokenize(line);
-        assert!(tok.len() == 4);
-        assert!(tok[0] == b".func");
-        let function = bytes_to_number(tok[1]).unwrap();
+        expect_num_args_eq(&tok, 4)?;
+        expect_token(tok[0], b".func")?;
+        let function = bytes_to_number(tok[1])?;
         let visibility = match tok[2] {
             b"public" => Visibility::Public,
             b"private" => Visibility::Private,
             b"friend" => Visibility::Friend,
-            _ => panic!(),
+            _ => return Err(MoveAssemblyErrorInner::InvalidVisibility {found: tok[2].to_vec()}),
         };
-        let is_entry_str = std::str::from_utf8(tok[3]).unwrap();
-        let is_entry = FromStr::from_str(is_entry_str).unwrap();
+        let is_entry = bytes_to_bool(tok[3])?;
         let mut function_acquires = Vec::new();
 
         if let Some((_line_no, line)) = line_it.next() {
             let tok = tokenize(line);
 
-            assert!(tok[0] == b".acquires");
+            expect_token(tok[0], b".acquires")?;
 
             for t in &tok[1..] {
-                let def = bytes_to_number(t).unwrap();
+                let def = bytes_to_number(t)?;
                 function_acquires.push(StructDefinitionIndex(def));
             };
         } else {
-            panic!();
+            return Err(MoveAssemblyErrorInner::ExpectedAcquires);
         };
 
         let locals = if let Some((_line_no, line)) = line_it.next() {
             let tok = tokenize(line);
 
-            assert!(tok.len() == 2);
-            assert!(tok[0] == b".locals");
+            expect_num_args_eq(&tok, 2)?;
+            expect_token(tok[0], b".locals")?;
 
-            bytes_to_number(tok[1]).unwrap()
+            bytes_to_number(tok[1])?
         } else {
-            panic!();
+            return Err(MoveAssemblyErrorInner::ExpectedLocals);
         };
 
         let mut code = Vec::new();
@@ -355,18 +439,18 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
             let tok = tokenize(line);
 
             let insn = if tok.len() == 1 {
-                insn_one_arg(tok[0]).unwrap()
+                insn_zero_args(tok[0]).ok_or(MoveAssemblyErrorInner::InvalidInstruction)?
             } else if tok.len() == 2 {
-                insn_two_args(tok[0], tok[1]).unwrap()
+                insn_one_arg(tok[0], tok[1])?
             } else if tok.len() == 3 {
                 // VecPack(SignatureIndex, u64),
-                assert!(tok[0] == b"vec_pack");
-                let ty = bytes_to_number(tok[1]).unwrap();
-                let num = bytes_to_number128(tok[2]).unwrap();
-                let num: u64 = num.try_into().unwrap();
+                expect_token(tok[0], b"vec_pack")?;
+                let ty = bytes_to_number(tok[1])?;
+                let num = bytes_to_number128(tok[2])?;
+                let num: u64 = num.try_into()?;
                 Bytecode::VecPack(SignatureIndex(ty), num)
             } else {
-                panic!()
+                return Err(MoveAssemblyErrorInner::InvalidInstruction);
             };
             code.push(insn);
         };
@@ -387,16 +471,16 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
 
 // friend decls same as module handles
 
-fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<StructDefInstantiation> {
+fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<StructDefInstantiation>, MoveAssemblyErrorInner> {
     let mut struct_def_instantiations = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
         let tok = tokenize(line);
-        assert!(tok.len() == 2);
-        let def = bytes_to_number(tok[0]).unwrap();
-        let type_parameters = bytes_to_number(tok[1]).unwrap();
+        expect_num_args_eq(tok.len(), 2)?;
+        let def = bytes_to_number(tok[0])?;
+        let type_parameters = bytes_to_number(tok[1])?;
         struct_def_instantiations.push(StructDefInstantiation {
             def: StructDefinitionIndex(def),
             type_parameters: SignatureIndex(type_parameters),
@@ -406,16 +490,16 @@ fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize
 }
 
 
-fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<FunctionInstantiation> {
+fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FunctionInstantiation>, MoveAssemblyErrorInner> {
     let mut function_instantiations = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
         let tok = tokenize(line);
-        assert!(tok.len() == 2);
-        let handle = bytes_to_number(tok[0]).unwrap();
-        let type_parameters = bytes_to_number(tok[1]).unwrap();
+        expect_num_args_eq(tok.len(), 2)?;
+        let handle = bytes_to_number(tok[0])?;
+        let type_parameters = bytes_to_number(tok[1])?;
         function_instantiations.push(FunctionInstantiation {
             handle: FunctionHandleIndex(handle),
             type_parameters: SignatureIndex(type_parameters),
@@ -424,16 +508,16 @@ fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, 
     function_instantiations
 }
 
-fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<FieldInstantiation> {
+fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FieldInstantiation>, MoveAssemblyErrorInner> {
     let mut field_instantiations = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
         let tok = tokenize(line);
-        assert!(tok.len() == 2);
-        let handle = bytes_to_number(tok[0]).unwrap();
-        let type_parameters = bytes_to_number(tok[1]).unwrap();
+        expect_num_args_eq(tok.len(), 2)?;
+        let handle = bytes_to_number(tok[0])?;
+        let type_parameters = bytes_to_number(tok[1])?;
         field_instantiations.push(FieldInstantiation {
             handle: FieldHandleIndex(handle),
             type_parameters: SignatureIndex(type_parameters),
@@ -442,47 +526,48 @@ fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a
     field_instantiations
 }
 
-fn table_signatures<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<Signature> {
+fn table_signatures<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<Signature>, MoveAssemblyErrorInner> {
     let token_arr_parser = TokenArrParser::new();
     let mut signatures = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
-        let signature_str = std::str::from_utf8(line).unwrap();
+        let signature_str = from_utf8(line)?;
+        // TODO: proper error reporting
         let signature = token_arr_parser.parse(signature_str).unwrap();
         signatures.push(Signature(signature));
     };
     signatures
 }
 
-fn table_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<Identifier> {
+fn table_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<Identifier>, MoveAssemblyErrorInner> {
     let mut identifiers = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
-        let name = std::str::from_utf8(line).unwrap();
-        let name = Identifier::new(name).unwrap();
+        let name = from_utf8(line)?;
+        let name = Identifier::new(name).map_err(|| MoveAssemblyErrorInner::InvalidIdentifier)?;
         identifiers.push(name);
     };
     identifiers
 }
 
-fn table_address_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<AccountAddress> {
+fn table_address_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<AccountAddress>, MoveAssemblyErrorInner> {
     let mut address_identifiers = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
         if line == b".endtable" {
             break;
         };
-        let address = <[u8; 16]>::from_hex(line).unwrap();
+        let address = <[u8; 16]>::from_hex(line).map_err(|| MoveAssemblyErrorInner::InvalidAddress)?;
         let address = AccountAddress::new(address);
         address_identifiers.push(address);
     };
     address_identifiers
 }
 
-fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<Constant> {
+fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<Constant>, MoveAssemblyErrorInner> {
     let token_parser = TokenParser::new();
     let mut constant_pool = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
@@ -490,10 +575,11 @@ fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
             break;
         };
         let tok = tokenize(line);
-        assert!(tok.len() == 2);
-        let type_str = std::str::from_utf8(tok[0]).unwrap();
+        expect_num_args_eq(tok.len(), 2)?;
+        let type_str = from_utf8(tok[0])?;
+        // TODO: better error handling
         let type_ = token_parser.parse(type_str).unwrap();
-        let data = Vec::<u8>::from_hex(tok[1]).unwrap();
+        let data = Vec::<u8>::from_hex(tok[1]).map_err(|| MoveAssemblyErrorInner::InvalidConstantValue)?;
         constant_pool.push(Constant {
             type_,
             data,
@@ -511,7 +597,7 @@ fn table_metadata<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) {
     };
 }
 
-fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Vec<StructDefinition> {
+fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<StructDefinition>, MoveAssemblyErrorInner> {
     let token_parser = TokenParser::new();
     let mut struct_defs = Vec::new();
     while let Some((_line_no, line)) = line_it.next() {
@@ -519,10 +605,10 @@ fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) 
             break;
         };
         let tok = tokenize(line);
-        assert!(tok.len() == 3);
-        assert!(tok[0] == b".struct");
+        expect_num_args_eq(tok.len(), 3)?;
+        expect_token(tok[0], b".struct")?;
 
-        let struct_handle = bytes_to_number(tok[2]).unwrap();
+        let struct_handle = bytes_to_number(tok[2])?;
         if tok[1] == b"native" {
             struct_defs.push(StructDefinition {
                 struct_handle: StructHandleIndex(struct_handle),
@@ -535,10 +621,13 @@ fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) 
                     break;
                 };
                 let tok = tokenize(line);
-                assert!(tok.len() == 2);
-                assert!(*tok[0].last().unwrap() == b':');
-                let name = bytes_to_number(&tok[0][..tok[0].len() - 1]).unwrap();
-                let signature_str = std::str::from_utf8(tok[1]).unwrap();
+                expect_num_args_eq(tok.len(), 2)?;
+                if !(*tok[0].last().unwrap() == b':') {
+                    return Err(MoveAssemblyErrorInner::FieldNameSepNotFound);
+                };
+                let name = bytes_to_number(&tok[0][..tok[0].len() - 1])?;
+                let signature_str = from_utf8(tok[1])?;
+                // TODO: error handle
                 let signature = token_parser.parse(signature_str).unwrap();
                 field_definitions.push(FieldDefinition {
                     name: IdentifierIndex(name),
@@ -550,13 +639,13 @@ fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) 
                 field_information: StructFieldInformation::Declared(field_definitions),
             });
         } else {
-            panic!();
+            return Err(MoveAssemblyErrorInner::InvalidStructType);
         };
     };
     struct_defs
 }
 
-pub fn parse_module(buf: &[u8]) -> CompiledModule {
+pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
     enum State {
         TypeModule,
         Version,
