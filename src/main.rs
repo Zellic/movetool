@@ -38,7 +38,7 @@ fn main() {
         "asm" => {
             let mut buf = Vec::new();
             stdin.read_to_end(&mut buf).unwrap();
-            let module = parse_module(&buf);
+            let module = parse_module(&buf).unwrap();
             let mut nbuf = Vec::new();
             module.serialize(&mut nbuf).unwrap();
             stdout.write_all(&nbuf).unwrap();

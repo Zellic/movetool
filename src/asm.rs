@@ -8,6 +8,7 @@ use hex::FromHex;
 use std::str::FromStr;
 use std::error::Error;
 
+#[derive(Debug)]
 enum MoveAssemblyErrorInner {
     InvalidAbility,
     InvalidNumber,
@@ -28,12 +29,13 @@ enum MoveAssemblyErrorInner {
     InvalidAddress,
     InvalidConstantValue,
     FieldNameSepNotFound,
-};
+}
 
+#[derive(Debug)]
 pub struct MoveAssemblyError {
     inner: MoveAssemblyErrorInner,
     line_no: usize,
-};
+}
 
 struct LineIterator<'a, T: Iterator<Item = &'a [u8]>> {
     it: T,
@@ -112,7 +114,7 @@ fn string_to_ability(buf: &[u8]) -> Result<AbilitySet, MoveAssemblyErrorInner> {
 }
 
 fn do_bytes_to_bool(buf: &[u8]) -> Option<bool> {
-    FromStr::from_str(std::str::from_utf8(buf).ok()?).ok()?
+    Some(FromStr::from_str(std::str::from_utf8(buf).ok()?).ok()?)
 }
 
 fn bytes_to_bool(buf: &[u8]) -> Result<bool, MoveAssemblyErrorInner> {
@@ -123,7 +125,7 @@ fn expect_num_args_eq<T>(tok: &Vec<T>, num: usize) -> Result<(), MoveAssemblyErr
     if tok.len() == num {
         Ok(())
     } else {
-        Err(MoveAssemblyErrorInner::WrongNumberOfArgs {found: tok.len(), expected: num})
+        Err(MoveAssemblyErrorInner::WrongNumberOfTokens {found: tok.len(), expected: num})
     }
 }
 
@@ -131,24 +133,16 @@ fn expect_token(buf: &[u8], expected: &'static [u8]) -> Result<(), MoveAssemblyE
     if buf == expected {
         Ok(())
     } else {
-        Err(MoveAssemblyErrorInner::ExpectedToken {found: buf.as_vec(), expected})
+        Err(MoveAssemblyErrorInner::ExpectedToken {found: buf.to_vec(), expected})
     }
 }
 
-fn try_into<T>(x: u128) -> Result<T, MoveAssemblyErrorInner> {
-    if let Ok(x) = x.try_into() {
-        x
-    } else {
-        Err(MoveAssemblyErrorInner::ValueTooLarge)
-    }
+fn try_into<S, T: TryFrom<S>>(x: S) -> Result<T, MoveAssemblyErrorInner> {
+    x.try_into().map_err(|_| MoveAssemblyErrorInner::ValueTooLarge)
 }
 
 fn from_utf8(buf: &[u8]) -> Result<&str, MoveAssemblyErrorInner> {
-    if let Ok(res) = std::str::from_utf8(buf) {
-        res
-    } else {
-        Err(MoveAssemblyErrorInner::NotUTF8)
-    }
+    std::str::from_utf8(buf).map_err(|_| MoveAssemblyErrorInner::NotUTF8)
 }
 
 fn tokenize(mut buf: &[u8]) -> Vec<&[u8]> {
@@ -174,13 +168,9 @@ fn tokenize(mut buf: &[u8]) -> Vec<&[u8]> {
 fn parse_module_handle(line: &[u8]) -> Result<ModuleHandle, MoveAssemblyErrorInner> {
     let tok = tokenize(line);
     expect_num_args_eq(&tok, 2)?;
-    let address = bytes_to_number(tok[0]) else {
-        return MoveAssemblyErrorInner::InvalidNumber;
-    };
-    let name = bytes_to_number(tok[1]) else {
-        return MoveAssemblyErrorInner::InvalidNumber;
-    };
-    Some(ModuleHandle {
+    let address = bytes_to_number(tok[0])?;
+    let name = bytes_to_number(tok[1])?;
+    Ok(ModuleHandle {
         address: AddressIdentifierIndex(address),
         name: IdentifierIndex(name),
     })
@@ -230,17 +220,17 @@ fn insn_one_arg(tok0: &[u8], tok1: &[u8]) -> Result<Bytecode, MoveAssemblyErrorI
     match tok0 {
         b"ld256" => {
             let val_str = from_utf8(tok1)?;
-            let Ok(val) = if val_str.len() >= 2 && &val_str[..2] == "0x" { 
+            let Ok(val) = (if val_str.len() >= 2 && &val_str[..2] == "0x" { 
                 move_core_types::u256::U256::from_str_radix(&val_str[2..], 16)
             } else {
                 move_core_types::u256::U256::from_str(val_str)
-            } else {
+            }) else {
                 return Err(MoveAssemblyErrorInner::InvalidNumber);
             };
             Ok(Bytecode::LdU256(val))
         },
         _ => {
-            let val = bytes_to_number128(tok1) else {
+            let Some(val) = bytes_to_number128(tok1) else {
                 return Err(MoveAssemblyErrorInner::InvalidNumber);
             };
             match tok0 {
@@ -303,7 +293,7 @@ fn table_module_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])
         };
         module_handles.push(parse_module_handle(line)?);
     };
-    module_handles
+    Ok(module_handles)
 }
 
 fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<StructHandle>, MoveAssemblyErrorInner> {
@@ -335,7 +325,7 @@ fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])
             type_parameters,
         });
     };
-    struct_handles
+    Ok(struct_handles)
 }
 
 fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FunctionHandle>, MoveAssemblyErrorInner> {
@@ -365,7 +355,7 @@ fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8
             type_parameters,
         });
     };
-    function_handles
+    Ok(function_handles)
 }
 
 fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FieldHandle>, MoveAssemblyErrorInner> {
@@ -383,7 +373,7 @@ fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
             field,
         });
     };
-    field_handles
+    Ok(field_handles)
 }
 
 fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FunctionDefinition>, MoveAssemblyErrorInner> {
@@ -446,7 +436,7 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
                 // VecPack(SignatureIndex, u64),
                 expect_token(tok[0], b"vec_pack")?;
                 let ty = bytes_to_number(tok[1])?;
-                let num = bytes_to_number128(tok[2])?;
+                let num = bytes_to_number128(tok[2]).ok_or(MoveAssemblyErrorInner::InvalidNumber)?;
                 let num: u64 = num.try_into()?;
                 Bytecode::VecPack(SignatureIndex(ty), num)
             } else {
@@ -466,7 +456,7 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
             }),
         });
     };
-    function_defs
+    Ok(function_defs)
 }
 
 // friend decls same as module handles
@@ -478,7 +468,7 @@ fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize
             break;
         };
         let tok = tokenize(line);
-        expect_num_args_eq(tok.len(), 2)?;
+        expect_num_args_eq(&tok, 2)?;
         let def = bytes_to_number(tok[0])?;
         let type_parameters = bytes_to_number(tok[1])?;
         struct_def_instantiations.push(StructDefInstantiation {
@@ -486,7 +476,7 @@ fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize
             type_parameters: SignatureIndex(type_parameters),
         });
     };
-    struct_def_instantiations
+    Ok(struct_def_instantiations)
 }
 
 
@@ -497,7 +487,7 @@ fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, 
             break;
         };
         let tok = tokenize(line);
-        expect_num_args_eq(tok.len(), 2)?;
+        expect_num_args_eq(&tok, 2)?;
         let handle = bytes_to_number(tok[0])?;
         let type_parameters = bytes_to_number(tok[1])?;
         function_instantiations.push(FunctionInstantiation {
@@ -505,7 +495,7 @@ fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, 
             type_parameters: SignatureIndex(type_parameters),
         });
     };
-    function_instantiations
+    Ok(function_instantiations)
 }
 
 fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FieldInstantiation>, MoveAssemblyErrorInner> {
@@ -515,7 +505,7 @@ fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a
             break;
         };
         let tok = tokenize(line);
-        expect_num_args_eq(tok.len(), 2)?;
+        expect_num_args_eq(&tok, 2)?;
         let handle = bytes_to_number(tok[0])?;
         let type_parameters = bytes_to_number(tok[1])?;
         field_instantiations.push(FieldInstantiation {
@@ -523,7 +513,7 @@ fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a
             type_parameters: SignatureIndex(type_parameters),
         });
     };
-    field_instantiations
+    Ok(field_instantiations)
 }
 
 fn table_signatures<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<Signature>, MoveAssemblyErrorInner> {
@@ -538,7 +528,7 @@ fn table_signatures<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -
         let signature = token_arr_parser.parse(signature_str).unwrap();
         signatures.push(Signature(signature));
     };
-    signatures
+    Ok(signatures)
 }
 
 fn table_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<Identifier>, MoveAssemblyErrorInner> {
@@ -548,10 +538,10 @@ fn table_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) 
             break;
         };
         let name = from_utf8(line)?;
-        let name = Identifier::new(name).map_err(|| MoveAssemblyErrorInner::InvalidIdentifier)?;
+        let name = Identifier::new(name).map_err(|_| MoveAssemblyErrorInner::InvalidIdentifier)?;
         identifiers.push(name);
     };
-    identifiers
+    Ok(identifiers)
 }
 
 fn table_address_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<AccountAddress>, MoveAssemblyErrorInner> {
@@ -560,11 +550,11 @@ fn table_address_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a 
         if line == b".endtable" {
             break;
         };
-        let address = <[u8; 16]>::from_hex(line).map_err(|| MoveAssemblyErrorInner::InvalidAddress)?;
+        let address = <[u8; 16]>::from_hex(line).map_err(|_| MoveAssemblyErrorInner::InvalidAddress)?;
         let address = AccountAddress::new(address);
         address_identifiers.push(address);
     };
-    address_identifiers
+    Ok(address_identifiers)
 }
 
 fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<Constant>, MoveAssemblyErrorInner> {
@@ -575,17 +565,17 @@ fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
             break;
         };
         let tok = tokenize(line);
-        expect_num_args_eq(tok.len(), 2)?;
+        expect_num_args_eq(&tok, 2)?;
         let type_str = from_utf8(tok[0])?;
         // TODO: better error handling
         let type_ = token_parser.parse(type_str).unwrap();
-        let data = Vec::<u8>::from_hex(tok[1]).map_err(|| MoveAssemblyErrorInner::InvalidConstantValue)?;
+        let data = Vec::<u8>::from_hex(tok[1]).map_err(|_| MoveAssemblyErrorInner::InvalidConstantValue)?;
         constant_pool.push(Constant {
             type_,
             data,
         });
     };
-    constant_pool
+    Ok(constant_pool)
 }
 
 fn table_metadata<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) {
@@ -605,7 +595,7 @@ fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) 
             break;
         };
         let tok = tokenize(line);
-        expect_num_args_eq(tok.len(), 3)?;
+        expect_num_args_eq(&tok, 3)?;
         expect_token(tok[0], b".struct")?;
 
         let struct_handle = bytes_to_number(tok[2])?;
@@ -621,7 +611,7 @@ fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) 
                     break;
                 };
                 let tok = tokenize(line);
-                expect_num_args_eq(tok.len(), 2)?;
+                expect_num_args_eq(&tok, 2)?;
                 if !(*tok[0].last().unwrap() == b':') {
                     return Err(MoveAssemblyErrorInner::FieldNameSepNotFound);
                 };
@@ -642,7 +632,7 @@ fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) 
             return Err(MoveAssemblyErrorInner::InvalidStructType);
         };
     };
-    struct_defs
+    Ok(struct_defs)
 }
 
 pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
@@ -703,28 +693,28 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
                     panic!();
                 };
                 match table_name {
-                    b"module_handles" => module_handles = table_module_handles(&mut line_it),
-                    b"struct_handles" => struct_handles = table_struct_handles(&mut line_it),
-                    b"function_handles" => function_handles = table_function_handles(&mut line_it),
-                    b"field_handles" => field_handles = table_field_handles(&mut line_it),
-                    b"friend_decls" => friend_decls = table_module_handles(&mut line_it),
-                    b"struct_def_instantiations" => struct_def_instantiations = table_struct_def_instantiations(&mut line_it),
-                    b"function_instantiations" => function_instantiations = table_function_instantiations(&mut line_it),
-                    b"field_instantiations" => field_instantiations = table_field_instantiations(&mut line_it),
-                    b"signatures" => signatures = table_signatures(&mut line_it),
-                    b"identifiers" => identifiers = table_identifiers(&mut line_it),
-                    b"address_identifiers" => address_identifiers = table_address_identifiers(&mut line_it),
-                    b"constant_pool" => constant_pool = table_constant_pool(&mut line_it),
+                    b"module_handles" => module_handles = table_module_handles(&mut line_it).unwrap(),
+                    b"struct_handles" => struct_handles = table_struct_handles(&mut line_it).unwrap(),
+                    b"function_handles" => function_handles = table_function_handles(&mut line_it).unwrap(),
+                    b"field_handles" => field_handles = table_field_handles(&mut line_it).unwrap(),
+                    b"friend_decls" => friend_decls = table_module_handles(&mut line_it).unwrap(),
+                    b"struct_def_instantiations" => struct_def_instantiations = table_struct_def_instantiations(&mut line_it).unwrap(),
+                    b"function_instantiations" => function_instantiations = table_function_instantiations(&mut line_it).unwrap(),
+                    b"field_instantiations" => field_instantiations = table_field_instantiations(&mut line_it).unwrap(),
+                    b"signatures" => signatures = table_signatures(&mut line_it).unwrap(),
+                    b"identifiers" => identifiers = table_identifiers(&mut line_it).unwrap(),
+                    b"address_identifiers" => address_identifiers = table_address_identifiers(&mut line_it).unwrap(),
+                    b"constant_pool" => constant_pool = table_constant_pool(&mut line_it).unwrap(),
                     b"metadata" => table_metadata(&mut line_it),
-                    b"struct_defs" => struct_defs = table_struct_defs(&mut line_it),
-                    b"function_defs" => function_defs = table_function_defs(&mut line_it),
+                    b"struct_defs" => struct_defs = table_struct_defs(&mut line_it).unwrap(),
+                    b"function_defs" => function_defs = table_function_defs(&mut line_it).unwrap(),
                     _ => panic!(),
                 };
             },
         };
     };
 
-    CompiledModule {
+    Ok(CompiledModule {
         version: version.into(),
         self_module_handle_idx: ModuleHandleIndex(self_module_handle_idx),
         module_handles,
@@ -742,5 +732,5 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
         metadata,
         struct_defs,
         function_defs,
-    }
+    })
 }
