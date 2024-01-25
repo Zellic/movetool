@@ -437,7 +437,7 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
                 expect_token(tok[0], b"vec_pack")?;
                 let ty = bytes_to_number(tok[1])?;
                 let num = bytes_to_number128(tok[2]).ok_or(MoveAssemblyErrorInner::InvalidNumber)?;
-                let num: u64 = num.try_into()?;
+                let num: u64 = try_into(num)?;
                 Bytecode::VecPack(SignatureIndex(ty), num)
             } else {
                 return Err(MoveAssemblyErrorInner::InvalidInstruction);

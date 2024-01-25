@@ -1,0 +1,131 @@
+.type module
+.version 6
+.self_module_handle_idx 0
+.table module_handles
+; address_idx identifier_idx
+0 1
+1 2
+.endtable
+.table struct_handles
+; abiltiies,cdsk module_idx identifier_idx
+-ds- 0 3 ---- false
+---k 0 4
+.endtable
+.table function_handles
+; module_idx identifier_idx parameters_sig_idx return_sig_idx type_parameters...,cdsk
+0 5 0 1
+0 6 2 3 -d--
+1 10 5 6
+.endtable
+.table field_handles
+; struct_def_idx member_count
+0 0
+.endtable
+.table friend_decls
+; address_idx identifier_idx
+0 0
+.endtable
+.table struct_def_instantiations
+; struct_def_idx type_params_signature_idx
+0 1
+0 2
+.endtable
+.table function_instantiations
+; function_handle_idx type_params_signature_idx
+1 7
+.endtable
+.table field_instantiations
+; field_handle_idx type_params_signature_idx
+0 2
+.endtable
+.table signatures
+; arrays of types, for specifics see source code
+[&signer, u64, u64]
+[u64]
+[type(0)]
+[]
+[struct(1)]
+[&signer]
+[address]
+[struct[u64](0)]
+[struct[type(0)](0)]
+.endtable
+.table identifiers
+; literal string identifiers
+Friendm
+Math
+signer
+StA
+StB
+sum
+use_obj
+m_u64
+m_g
+m_A
+address_of
+.endtable
+.table address_identifiers
+; addresses in hex
+00000000000000000000000000000002
+00000000000000000000000000000001
+.endtable
+.table constant_pool
+; type encoded_value_in_hex
+u256 331fcc0000000000000000000000000000000000000000000000000000000000
+.endtable
+.table metadata
+; key value
+.endtable
+.table struct_defs
+; structs can be native or declared
+.struct declared 0
+7: u64
+8: type(0)
+.endstruct
+.struct declared 1
+9: struct[u8](0)
+.endstruct
+.endtable
+.table function_defs
+; function_handle visibility_public_private_friend is_entry
+.func 0 public false
+; indices of struct definitions acquired by this function
+.acquires 1
+.locals 4
+copyloc 0
+call 2
+exists 1
+pop
+ld64 0x0
+ld64 0x1
+ld8 0x80
+shl
+pack_generic 0
+call_generic 0
+copyloc 0
+call 2
+move_from 1
+stloc 3
+moveloc 0
+moveloc 3
+move_to 1
+moveloc 1
+moveloc 2
+add
+ret
+.endfunc
+.func 1 public false
+; indices of struct definitions acquired by this function
+.acquires
+.locals 8
+ld64 0x0
+moveloc 0
+pack_generic 1
+stloc 1
+imm_borrow_loc 1
+imm_borrow_field_generic 0
+read_ref
+pop
+ret
+.endfunc
+.endtable
