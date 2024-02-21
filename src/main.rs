@@ -50,8 +50,7 @@ fn main() {
                         StructHandleWrongNumberOfTokens {found} => println!("E0004 wrong number of tokens in struct handle. Found {}", found),
                         NotEnoughTokens {found, min} => println!("E0005 not enough tokens on line. Expected at least {}, found {}", min, found),
                         NotUTF8 => println!("E0006 line is not UTF8 decodable"),
-                        InvalidStructType => println!("E0007 invalid type of struct. TODO explain"),
-                        NonStructInTable => println!("E0008 ???"),
+                        InvalidStructType => println!("E0007 type of struct is neither \"declared\" nor \"native\""),
                         InvalidInstruction => println!("E0009 invalid instruction"),
                         InvalidBoolean => println!("E0010 invalid boolena"),
                         ExpectedToken {found, expected} => println!("E0011 expected token but found different token. Expected \"{}\", found \"{}\"", String::from_utf8_lossy(expected), String::from_utf8_lossy(&found)),
@@ -63,6 +62,10 @@ fn main() {
                         InvalidAddress => println!("E0016 invalid address"),
                         InvalidConstantValue => println!("E0017 invalid constant value"),
                         FieldNameSepNotFound => println!("E0018 expected field name separator."),
+                        InvalidMoveVersion => println!("E0019 invalid move version statement."),
+                        InvalidSelfModuleHandle => println!("E0020 invalid self module handle"),
+                        ExpectedTable => println!("E0021 expected table block at top level."),
+                        InvalidTableType {found} => println!("E0022 invalid table type. Found \"{}\"", String::from_utf8_lossy(&found)),
                         _ => todo!(),
                     };
                     return;

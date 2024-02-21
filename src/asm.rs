@@ -1,12 +1,11 @@
 use crate::mvasm::*;
 
-use move_binary_format::{CompiledModule, file_format::*};
+use move_binary_format::file_format::*;
 use move_core_types::{identifier::Identifier, account_address::AccountAddress};
 
 use hex::FromHex;
 
 use std::str::FromStr;
-use std::error::Error;
 
 #[derive(Debug)]
 pub enum MoveAssemblyErrorInner {
@@ -17,7 +16,6 @@ pub enum MoveAssemblyErrorInner {
     NotEnoughTokens {found: usize, min: usize},
     NotUTF8,
     InvalidStructType,
-    NonStructInTable,
     InvalidInstruction,
     InvalidBoolean,
     ExpectedToken {found: Vec<u8>, expected: &'static [u8]},
@@ -29,6 +27,10 @@ pub enum MoveAssemblyErrorInner {
     InvalidAddress,
     InvalidConstantValue,
     FieldNameSepNotFound,
+    InvalidMoveVersion,
+    InvalidSelfModuleHandle,
+    ExpectedTable,
+    InvalidTableType {found: Vec<u8>},
 }
 
 #[derive(Debug)]
@@ -673,34 +675,41 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
 
     let mut state = State::TypeModule;
 
-    let token_parser = TokenParser::new();
-    let token_arr_parser = TokenArrParser::new();
     let mut line_it = line_iter_from_buf(buf);
     while let Some(line) = line_it.next() {
         match state {
             State::TypeModule => {
                 if line != b".type module" {
-                    panic!();
+                    todo!();
                 };
                 state = State::Version;
             },
             State::Version => {
                 let Some(version_str) = line.strip_prefix(b".version ") else {
-                    panic!();
+                    return Err(MoveAssemblyError {
+                        inner: MoveAssemblyErrorInner::InvalidMoveVersion,
+                        line_no: line_it.cnt,
+                    });
                 };
-                version = bytes_to_number(version_str).unwrap();
+                version = wrap_move_asm_error(bytes_to_number(version_str), line_it.cnt)?;
                 state = State::SelfIdx;
             },
             State::SelfIdx => {
                 let Some(self_idx_str) = line.strip_prefix(b".self_module_handle_idx ") else {
-                    panic!();
+                    return Err(MoveAssemblyError {
+                        inner: MoveAssemblyErrorInner::InvalidSelfModuleHandle,
+                        line_no: line_it.cnt,
+                    });
                 };
-                self_module_handle_idx = bytes_to_number(self_idx_str).unwrap();
+                self_module_handle_idx = wrap_move_asm_error(bytes_to_number(self_idx_str), line_it.cnt)?;
                 state = State::Table;
             },
             State::Table => {
                 let Some(table_name) = line.strip_prefix(b".table ") else {
-                    panic!();
+                    return Err(MoveAssemblyError {
+                        inner: MoveAssemblyErrorInner::ExpectedTable,
+                        line_no: line_it.cnt,
+                    });
                 };
                 match table_name {
                     b"module_handles" => module_handles = wrap_move_asm_error(table_module_handles(&mut line_it), line_it.cnt)?,
@@ -718,7 +727,12 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
                     b"metadata" => table_metadata(&mut line_it),
                     b"struct_defs" => struct_defs = wrap_move_asm_error(table_struct_defs(&mut line_it), line_it.cnt)?,
                     b"function_defs" => function_defs = wrap_move_asm_error(table_function_defs(&mut line_it), line_it.cnt)?,
-                    _ => panic!(),
+                    name => {
+                        return Err(MoveAssemblyError {
+                            inner: MoveAssemblyErrorInner::InvalidTableType {found: name.to_vec()},
+                            line_no: line_it.cnt,
+                        });
+                    },
                 };
             },
         };
