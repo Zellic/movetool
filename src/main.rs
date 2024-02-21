@@ -7,7 +7,7 @@ mod dis;
 mod asm;
 
 use dis::print_module;
-use asm::parse_module;
+use asm::{parse_module, MoveAssemblyErrorInner};
 
 use move_binary_format::CompiledModule;
 
@@ -38,7 +38,36 @@ fn main() {
         "asm" => {
             let mut buf = Vec::new();
             stdin.read_to_end(&mut buf).unwrap();
-            let module = parse_module(&buf).unwrap();
+            let module = match parse_module(&buf) {
+                Ok(module) => module,
+                Err(err) => {
+                    print!("line {}: ", err.line_no);
+                    use MoveAssemblyErrorInner::*;
+                    match err.inner {
+                        InvalidAbility => println!("E0001 invalid ability string"),
+                        InvalidNumber => println!("E0002 invalid number"),
+                        WrongNumberOfTokens {found, expected} => println!("E0003 wrong number of tokens on line. Expected {}, found {}", expected, found),
+                        StructHandleWrongNumberOfTokens {found} => println!("E0004 wrong number of tokens in struct handle. Found {}", found),
+                        NotEnoughTokens {found, min} => println!("E0005 not enough tokens on line. Expected at least {}, found {}", min, found),
+                        NotUTF8 => println!("E0006 line is not UTF8 decodable"),
+                        InvalidStructType => println!("E0007 invalid type of struct. TODO explain"),
+                        NonStructInTable => println!("E0008 ???"),
+                        InvalidInstruction => println!("E0009 invalid instruction"),
+                        InvalidBoolean => println!("E0010 invalid boolena"),
+                        ExpectedToken {found, expected} => println!("E0011 expected token but found different token. Expected \"{}\", found \"{}\"", String::from_utf8_lossy(expected), String::from_utf8_lossy(&found)),
+                        ValueTooLarge => println!("E0011 integer value too large"),
+                        ExpectedAcquires => println!("E0012 expected \".acquires\""),
+                        ExpectedLocals => println!("E0013 expected \".locals\""),
+                        InvalidVisibility {found} => println!("E0014 invalid visibility designator. Found \"{}\"", String::from_utf8_lossy(&found)),
+                        InvalidIdentifier => println!("E0015 invalid identifier"),
+                        InvalidAddress => println!("E0016 invalid address"),
+                        InvalidConstantValue => println!("E0017 invalid constant value"),
+                        FieldNameSepNotFound => println!("E0018 expected field name separator."),
+                        _ => todo!(),
+                    };
+                    return;
+                },
+            };
             let mut nbuf = Vec::new();
             module.serialize(&mut nbuf).unwrap();
             stdout.write_all(&nbuf).unwrap();

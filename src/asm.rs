@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::error::Error;
 
 #[derive(Debug)]
-enum MoveAssemblyErrorInner {
+pub enum MoveAssemblyErrorInner {
     InvalidAbility,
     InvalidNumber,
     WrongNumberOfTokens {found: usize, expected: usize},
@@ -33,12 +33,13 @@ enum MoveAssemblyErrorInner {
 
 #[derive(Debug)]
 pub struct MoveAssemblyError {
-    inner: MoveAssemblyErrorInner,
-    line_no: usize,
+    pub inner: MoveAssemblyErrorInner,
+    pub line_no: usize,
 }
 
 struct LineIterator<'a, T: Iterator<Item = &'a [u8]>> {
     it: T,
+    pub cnt: usize,
 }
 
 impl<'a, T: Iterator<Item = &'a [u8]>> Iterator for LineIterator<'a, T> {
@@ -47,6 +48,7 @@ impl<'a, T: Iterator<Item = &'a [u8]>> Iterator for LineIterator<'a, T> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let mut line = self.it.next()?;
+            self.cnt += 1;
             let sep = line.iter().position(|x| *x == b';');
             if let Some(sep) = sep {
                 line = <[u8]>::take(&mut line, ..sep).unwrap()
@@ -59,10 +61,11 @@ impl<'a, T: Iterator<Item = &'a [u8]>> Iterator for LineIterator<'a, T> {
     }
 }
 
-fn line_iter_from_buf(buf: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
+fn line_iter_from_buf(buf: &[u8]) -> LineIterator<impl Iterator<Item = &[u8]>> {
     LineIterator {
         it: buf.split(|x| *x == b'\n'),
-    }.enumerate()
+        cnt: 0,
+    }
 }
 
 fn bytes_to_number128(buf: &[u8]) -> Option<u128> {
@@ -285,9 +288,9 @@ fn insn_one_arg(tok0: &[u8], tok1: &[u8]) -> Result<Bytecode, MoveAssemblyErrorI
     }
 }
 
-fn table_module_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<ModuleHandle>, MoveAssemblyErrorInner> {
+fn table_module_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<ModuleHandle>, MoveAssemblyErrorInner> {
     let mut module_handles = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -296,9 +299,9 @@ fn table_module_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])
     Ok(module_handles)
 }
 
-fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<StructHandle>, MoveAssemblyErrorInner> {
+fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<StructHandle>, MoveAssemblyErrorInner> {
     let mut struct_handles = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -328,9 +331,9 @@ fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])
     Ok(struct_handles)
 }
 
-fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FunctionHandle>, MoveAssemblyErrorInner> {
+fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<FunctionHandle>, MoveAssemblyErrorInner> {
     let mut function_handles = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -358,9 +361,9 @@ fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8
     Ok(function_handles)
 }
 
-fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FieldHandle>, MoveAssemblyErrorInner> {
+fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<FieldHandle>, MoveAssemblyErrorInner> {
     let mut field_handles = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -376,9 +379,9 @@ fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
     Ok(field_handles)
 }
 
-fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FunctionDefinition>, MoveAssemblyErrorInner> {
+fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<FunctionDefinition>, MoveAssemblyErrorInner> {
     let mut function_defs = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -395,7 +398,7 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
         let is_entry = bytes_to_bool(tok[3])?;
         let mut function_acquires = Vec::new();
 
-        if let Some((_line_no, line)) = line_it.next() {
+        if let Some(line) = line_it.next() {
             let tok = tokenize(line);
 
             expect_token(tok[0], b".acquires")?;
@@ -408,7 +411,7 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
             return Err(MoveAssemblyErrorInner::ExpectedAcquires);
         };
 
-        let locals = if let Some((_line_no, line)) = line_it.next() {
+        let locals = if let Some(line) = line_it.next() {
             let tok = tokenize(line);
 
             expect_num_args_eq(&tok, 2)?;
@@ -421,7 +424,7 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
 
         let mut code = Vec::new();
 
-        while let Some((_line_no, line)) = line_it.next() {
+        while let Some(line) = line_it.next() {
             if line == b".endfunc" {
                 break;
             };
@@ -461,9 +464,9 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
 
 // friend decls same as module handles
 
-fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<StructDefInstantiation>, MoveAssemblyErrorInner> {
+fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<StructDefInstantiation>, MoveAssemblyErrorInner> {
     let mut struct_def_instantiations = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -480,9 +483,9 @@ fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize
 }
 
 
-fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FunctionInstantiation>, MoveAssemblyErrorInner> {
+fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<FunctionInstantiation>, MoveAssemblyErrorInner> {
     let mut function_instantiations = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -498,9 +501,9 @@ fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, 
     Ok(function_instantiations)
 }
 
-fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<FieldInstantiation>, MoveAssemblyErrorInner> {
+fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<FieldInstantiation>, MoveAssemblyErrorInner> {
     let mut field_instantiations = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -516,10 +519,10 @@ fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = (usize, &'a
     Ok(field_instantiations)
 }
 
-fn table_signatures<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<Signature>, MoveAssemblyErrorInner> {
+fn table_signatures<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<Signature>, MoveAssemblyErrorInner> {
     let token_arr_parser = TokenArrParser::new();
     let mut signatures = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -531,9 +534,9 @@ fn table_signatures<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -
     Ok(signatures)
 }
 
-fn table_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<Identifier>, MoveAssemblyErrorInner> {
+fn table_identifiers<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<Identifier>, MoveAssemblyErrorInner> {
     let mut identifiers = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -544,9 +547,9 @@ fn table_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) 
     Ok(identifiers)
 }
 
-fn table_address_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<AccountAddress>, MoveAssemblyErrorInner> {
+fn table_address_identifiers<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<AccountAddress>, MoveAssemblyErrorInner> {
     let mut address_identifiers = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -557,10 +560,10 @@ fn table_address_identifiers<'a>(line_it: &mut impl Iterator<Item = (usize, &'a 
     Ok(address_identifiers)
 }
 
-fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<Constant>, MoveAssemblyErrorInner> {
+fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<Constant>, MoveAssemblyErrorInner> {
     let token_parser = TokenParser::new();
     let mut constant_pool = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -578,19 +581,19 @@ fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>
     Ok(constant_pool)
 }
 
-fn table_metadata<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) {
+fn table_metadata<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) {
     // TODO metadata table
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
     };
 }
 
-fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) -> Result<Vec<StructDefinition>, MoveAssemblyErrorInner> {
+fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<StructDefinition>, MoveAssemblyErrorInner> {
     let token_parser = TokenParser::new();
     let mut struct_defs = Vec::new();
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
@@ -606,7 +609,7 @@ fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) 
             });
         } else if tok[1] == b"declared" {
             let mut field_definitions = Vec::new();
-            while let Some((_line_no, line)) = line_it.next() {
+            while let Some(line) = line_it.next() {
                 if line == b".endstruct" {
                     break;
                 };
@@ -633,6 +636,13 @@ fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = (usize, &'a [u8])>) 
         };
     };
     Ok(struct_defs)
+}
+
+fn wrap_move_asm_error<T>(res: Result<T, MoveAssemblyErrorInner>, line_no: usize) -> Result<T, MoveAssemblyError> {
+    res.map_err(|x| MoveAssemblyError {
+        inner: x,
+        line_no,
+    })
 }
 
 pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
@@ -666,7 +676,7 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
     let token_parser = TokenParser::new();
     let token_arr_parser = TokenArrParser::new();
     let mut line_it = line_iter_from_buf(buf);
-    while let Some((_line_no, line)) = line_it.next() {
+    while let Some(line) = line_it.next() {
         match state {
             State::TypeModule => {
                 if line != b".type module" {
@@ -693,21 +703,21 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
                     panic!();
                 };
                 match table_name {
-                    b"module_handles" => module_handles = table_module_handles(&mut line_it).unwrap(),
-                    b"struct_handles" => struct_handles = table_struct_handles(&mut line_it).unwrap(),
-                    b"function_handles" => function_handles = table_function_handles(&mut line_it).unwrap(),
-                    b"field_handles" => field_handles = table_field_handles(&mut line_it).unwrap(),
-                    b"friend_decls" => friend_decls = table_module_handles(&mut line_it).unwrap(),
-                    b"struct_def_instantiations" => struct_def_instantiations = table_struct_def_instantiations(&mut line_it).unwrap(),
-                    b"function_instantiations" => function_instantiations = table_function_instantiations(&mut line_it).unwrap(),
-                    b"field_instantiations" => field_instantiations = table_field_instantiations(&mut line_it).unwrap(),
-                    b"signatures" => signatures = table_signatures(&mut line_it).unwrap(),
-                    b"identifiers" => identifiers = table_identifiers(&mut line_it).unwrap(),
-                    b"address_identifiers" => address_identifiers = table_address_identifiers(&mut line_it).unwrap(),
-                    b"constant_pool" => constant_pool = table_constant_pool(&mut line_it).unwrap(),
+                    b"module_handles" => module_handles = wrap_move_asm_error(table_module_handles(&mut line_it), line_it.cnt)?,
+                    b"struct_handles" => struct_handles = wrap_move_asm_error(table_struct_handles(&mut line_it), line_it.cnt)?,
+                    b"function_handles" => function_handles = wrap_move_asm_error(table_function_handles(&mut line_it), line_it.cnt)?,
+                    b"field_handles" => field_handles = wrap_move_asm_error(table_field_handles(&mut line_it), line_it.cnt)?,
+                    b"friend_decls" => friend_decls = wrap_move_asm_error(table_module_handles(&mut line_it), line_it.cnt)?,
+                    b"struct_def_instantiations" => struct_def_instantiations = wrap_move_asm_error(table_struct_def_instantiations(&mut line_it), line_it.cnt)?,
+                    b"function_instantiations" => function_instantiations = wrap_move_asm_error(table_function_instantiations(&mut line_it), line_it.cnt)?,
+                    b"field_instantiations" => field_instantiations = wrap_move_asm_error(table_field_instantiations(&mut line_it), line_it.cnt)?,
+                    b"signatures" => signatures = wrap_move_asm_error(table_signatures(&mut line_it), line_it.cnt)?,
+                    b"identifiers" => identifiers = wrap_move_asm_error(table_identifiers(&mut line_it), line_it.cnt)?,
+                    b"address_identifiers" => address_identifiers = wrap_move_asm_error(table_address_identifiers(&mut line_it), line_it.cnt)?,
+                    b"constant_pool" => constant_pool = wrap_move_asm_error(table_constant_pool(&mut line_it), line_it.cnt)?,
                     b"metadata" => table_metadata(&mut line_it),
-                    b"struct_defs" => struct_defs = table_struct_defs(&mut line_it).unwrap(),
-                    b"function_defs" => function_defs = table_function_defs(&mut line_it).unwrap(),
+                    b"struct_defs" => struct_defs = wrap_move_asm_error(table_struct_defs(&mut line_it), line_it.cnt)?,
+                    b"function_defs" => function_defs = wrap_move_asm_error(table_function_defs(&mut line_it), line_it.cnt)?,
                     _ => panic!(),
                 };
             },
