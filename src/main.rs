@@ -10,6 +10,7 @@ use dis::print_module;
 use asm::{parse_module, MoveAssemblyErrorInner};
 
 use move_binary_format::CompiledModule;
+use move_bytecode_verifier::{self, VerifierConfig};
 
 use lalrpop_util::lalrpop_mod;
 
@@ -80,6 +81,15 @@ fn main() {
             stdin.read_to_end(&mut buf).unwrap();
             let module = CompiledModule::deserialize(&buf[..]).unwrap();
             print_module(&mut stdout, &module).unwrap();
+        },
+        "verify" => {
+            let mut buf = Vec::new();
+            stdin.read_to_end(&mut buf).unwrap();
+            let module = CompiledModule::deserialize(&buf[..]).unwrap();
+            // let res = move_bytecode_verifier::verify_module_unmetered(&module);
+            
+            let res = move_bytecode_verifier::verify_module_with_config(&VerifierConfig::default(), &module);
+            println!("{:?}", res);
         },
        _ => usage(&args[0][..]),
     };

@@ -12,5 +12,6 @@ lalrpop = "0.20.0"
 hex = "0.4.3"
 move-binary-format = { path = "../move/language/move-binary-format" }
 move-core-types = { path = "../move/language/move-core/types" }
+move-bytecode-verifier = { path = "../move/language/move-bytecode-verifier" }
 lalrpop-util = { version = "0.20.0", features = ["lexer", "unicode"] }
 thiserror = "1.0.50"
