@@ -6,12 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [build-dependencies]
-lalrpop = "0.20.0"
+lalrpop = "0.22.0"
 
 [dependencies]
 hex = "0.4.3"
-move-binary-format = { path = "../move/language/move-binary-format" }
-move-core-types = { path = "../move/language/move-core/types" }
-move-bytecode-verifier = { path = "../move/language/move-bytecode-verifier" }
-lalrpop-util = { version = "0.20.0", features = ["lexer", "unicode"] }
-thiserror = "1.0.50"
+move-binary-format = { git = "https://github.com/move-language/move-on-aptos.git", package = "move-binary-format" }
+move-core-types = { git = "https://github.com/move-language/move-on-aptos.git", package = "move-core-types" }
+move-bytecode-source-map = { git = "https://github.com/move-language/move-on-aptos.git", package = "move-bytecode-source-map" }
+move-bytecode-verifier = { git = "https://github.com/move-language/move-on-aptos.git", package = "move-bytecode-verifier" }
+lalrpop-util = { version = "0.22.0", features = ["lexer", "unicode"] }
+thiserror = "2.0"

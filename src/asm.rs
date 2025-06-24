@@ -1,7 +1,7 @@
 use crate::mvasm::*;
 
 use move_binary_format::file_format::*;
-use move_core_types::{identifier::Identifier, account_address::AccountAddress};
+use move_core_types::{account_address::AccountAddress, identifier::Identifier};
 
 use hex::FromHex;
 
@@ -11,18 +11,31 @@ use std::str::FromStr;
 pub enum MoveAssemblyErrorInner {
     InvalidAbility,
     InvalidNumber,
-    WrongNumberOfTokens {found: usize, expected: usize},
-    StructHandleWrongNumberOfTokens {found: usize},
-    NotEnoughTokens {found: usize, min: usize},
+    WrongNumberOfTokens {
+        found: usize,
+        expected: usize,
+    },
+    StructHandleWrongNumberOfTokens {
+        found: usize,
+    },
+    NotEnoughTokens {
+        found: usize,
+        min: usize,
+    },
     NotUTF8,
     InvalidStructType,
     InvalidInstruction,
     InvalidBoolean,
-    ExpectedToken {found: Vec<u8>, expected: &'static [u8]},
+    ExpectedToken {
+        found: Vec<u8>,
+        expected: &'static [u8],
+    },
     ValueTooLarge,
     ExpectedAcquires,
     ExpectedLocals,
-    InvalidVisibility {found: Vec<u8>},
+    InvalidVisibility {
+        found: Vec<u8>,
+    },
     InvalidIdentifier,
     InvalidAddress,
     InvalidConstantValue,
@@ -30,7 +43,9 @@ pub enum MoveAssemblyErrorInner {
     InvalidMoveVersion,
     InvalidSelfModuleHandle,
     ExpectedTable,
-    InvalidTableType {found: Vec<u8>},
+    InvalidTableType {
+        found: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -53,7 +68,7 @@ impl<'a, T: Iterator<Item = &'a [u8]>> Iterator for LineIterator<'a, T> {
             self.cnt += 1;
             let sep = line.iter().position(|x| *x == b';');
             if let Some(sep) = sep {
-                line = <[u8]>::take(&mut line, ..sep).unwrap()
+                line = &line[..sep];
             };
             line = line.trim_ascii();
             if !line.is_empty() {
@@ -130,7 +145,10 @@ fn expect_num_args_eq<T>(tok: &Vec<T>, num: usize) -> Result<(), MoveAssemblyErr
     if tok.len() == num {
         Ok(())
     } else {
-        Err(MoveAssemblyErrorInner::WrongNumberOfTokens {found: tok.len(), expected: num})
+        Err(MoveAssemblyErrorInner::WrongNumberOfTokens {
+            found: tok.len(),
+            expected: num,
+        })
     }
 }
 
@@ -138,12 +156,16 @@ fn expect_token(buf: &[u8], expected: &'static [u8]) -> Result<(), MoveAssemblyE
     if buf == expected {
         Ok(())
     } else {
-        Err(MoveAssemblyErrorInner::ExpectedToken {found: buf.to_vec(), expected})
+        Err(MoveAssemblyErrorInner::ExpectedToken {
+            found: buf.to_vec(),
+            expected,
+        })
     }
 }
 
 fn try_into<S, T: TryFrom<S>>(x: S) -> Result<T, MoveAssemblyErrorInner> {
-    x.try_into().map_err(|_| MoveAssemblyErrorInner::ValueTooLarge)
+    x.try_into()
+        .map_err(|_| MoveAssemblyErrorInner::ValueTooLarge)
 }
 
 fn from_utf8(buf: &[u8]) -> Result<&str, MoveAssemblyErrorInner> {
@@ -166,7 +188,7 @@ fn tokenize(mut buf: &[u8]) -> Vec<&[u8]> {
         if optk.is_none() {
             break;
         };
-    };
+    }
     res
 }
 
@@ -225,7 +247,7 @@ fn insn_one_arg(tok0: &[u8], tok1: &[u8]) -> Result<Bytecode, MoveAssemblyErrorI
     match tok0 {
         b"ld256" => {
             let val_str = from_utf8(tok1)?;
-            let Ok(val) = (if val_str.len() >= 2 && &val_str[..2] == "0x" { 
+            let Ok(val) = (if val_str.len() >= 2 && &val_str[..2] == "0x" {
                 move_core_types::u256::U256::from_str_radix(&val_str[2..], 16)
             } else {
                 move_core_types::u256::U256::from_str(val_str)
@@ -233,7 +255,7 @@ fn insn_one_arg(tok0: &[u8], tok1: &[u8]) -> Result<Bytecode, MoveAssemblyErrorI
                 return Err(MoveAssemblyErrorInner::InvalidNumber);
             };
             Ok(Bytecode::LdU256(val))
-        },
+        }
         _ => {
             let Some(val) = bytes_to_number128(tok1) else {
                 return Err(MoveAssemblyErrorInner::InvalidNumber);
@@ -254,27 +276,51 @@ fn insn_one_arg(tok0: &[u8], tok1: &[u8]) -> Result<Bytecode, MoveAssemblyErrorI
                         b"moveloc" => Ok(Bytecode::MoveLoc(try_into(val)?)),
                         b"stloc" => Ok(Bytecode::StLoc(try_into(val)?)),
                         b"call" => Ok(Bytecode::Call(FunctionHandleIndex(val))),
-                        b"call_generic" => Ok(Bytecode::CallGeneric(FunctionInstantiationIndex(val))),
+                        b"call_generic" => {
+                            Ok(Bytecode::CallGeneric(FunctionInstantiationIndex(val)))
+                        }
                         b"pack" => Ok(Bytecode::Pack(StructDefinitionIndex(val))),
-                        b"pack_generic" => Ok(Bytecode::PackGeneric(StructDefInstantiationIndex(val))),
+                        b"pack_generic" => {
+                            Ok(Bytecode::PackGeneric(StructDefInstantiationIndex(val)))
+                        }
                         b"unpack" => Ok(Bytecode::Unpack(StructDefinitionIndex(val))),
-                        b"unpack_generic" => Ok(Bytecode::UnpackGeneric(StructDefInstantiationIndex(val))),
+                        b"unpack_generic" => {
+                            Ok(Bytecode::UnpackGeneric(StructDefInstantiationIndex(val)))
+                        }
                         b"mut_borrow_loc" => Ok(Bytecode::MutBorrowLoc(try_into(val)?)),
                         b"imm_borrow_loc" => Ok(Bytecode::ImmBorrowLoc(try_into(val)?)),
                         b"mut_borrow_field" => Ok(Bytecode::MutBorrowField(FieldHandleIndex(val))),
-                        b"mut_borrow_field_generic" => Ok(Bytecode::MutBorrowFieldGeneric(FieldInstantiationIndex(val))),
+                        b"mut_borrow_field_generic" => Ok(Bytecode::MutBorrowFieldGeneric(
+                            FieldInstantiationIndex(val),
+                        )),
                         b"imm_borrow_field" => Ok(Bytecode::ImmBorrowField(FieldHandleIndex(val))),
-                        b"imm_borrow_field_generic" => Ok(Bytecode::ImmBorrowFieldGeneric(FieldInstantiationIndex(val))),
-                        b"mut_borrow_global" => Ok(Bytecode::MutBorrowGlobal(StructDefinitionIndex(val))),
-                        b"mut_borrow_global_generic" => Ok(Bytecode::MutBorrowGlobalGeneric(StructDefInstantiationIndex(val))),
-                        b"imm_borrow_global" => Ok(Bytecode::ImmBorrowGlobal(StructDefinitionIndex(val))),
-                        b"imm_borrow_global_generic" => Ok(Bytecode::ImmBorrowGlobalGeneric(StructDefInstantiationIndex(val))),
+                        b"imm_borrow_field_generic" => Ok(Bytecode::ImmBorrowFieldGeneric(
+                            FieldInstantiationIndex(val),
+                        )),
+                        b"mut_borrow_global" => {
+                            Ok(Bytecode::MutBorrowGlobal(StructDefinitionIndex(val)))
+                        }
+                        b"mut_borrow_global_generic" => Ok(Bytecode::MutBorrowGlobalGeneric(
+                            StructDefInstantiationIndex(val),
+                        )),
+                        b"imm_borrow_global" => {
+                            Ok(Bytecode::ImmBorrowGlobal(StructDefinitionIndex(val)))
+                        }
+                        b"imm_borrow_global_generic" => Ok(Bytecode::ImmBorrowGlobalGeneric(
+                            StructDefInstantiationIndex(val),
+                        )),
                         b"exists" => Ok(Bytecode::Exists(StructDefinitionIndex(val))),
-                        b"exists_generic" => Ok(Bytecode::ExistsGeneric(StructDefInstantiationIndex(val))),
+                        b"exists_generic" => {
+                            Ok(Bytecode::ExistsGeneric(StructDefInstantiationIndex(val)))
+                        }
                         b"move_from" => Ok(Bytecode::MoveFrom(StructDefinitionIndex(val))),
-                        b"move_from_generic" => Ok(Bytecode::MoveFromGeneric(StructDefInstantiationIndex(val))),
+                        b"move_from_generic" => {
+                            Ok(Bytecode::MoveFromGeneric(StructDefInstantiationIndex(val)))
+                        }
                         b"move_to" => Ok(Bytecode::MoveTo(StructDefinitionIndex(val))),
-                        b"move_to_generic" => Ok(Bytecode::MoveToGeneric(StructDefInstantiationIndex(val))),
+                        b"move_to_generic" => {
+                            Ok(Bytecode::MoveToGeneric(StructDefInstantiationIndex(val)))
+                        }
                         b"vec_len" => Ok(Bytecode::VecLen(SignatureIndex(val))),
                         b"vec_imm_borrow" => Ok(Bytecode::VecImmBorrow(SignatureIndex(val))),
                         b"vec_mut_borrow" => Ok(Bytecode::VecMutBorrow(SignatureIndex(val))),
@@ -284,24 +330,28 @@ fn insn_one_arg(tok0: &[u8], tok1: &[u8]) -> Result<Bytecode, MoveAssemblyErrorI
                         b"ld16" => Ok(Bytecode::LdU16(val)),
                         _ => Err(MoveAssemblyErrorInner::InvalidInstruction),
                     }
-                },
+                }
             }
-        },
+        }
     }
 }
 
-fn table_module_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<ModuleHandle>, MoveAssemblyErrorInner> {
+fn table_module_handles<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<ModuleHandle>, MoveAssemblyErrorInner> {
     let mut module_handles = Vec::new();
     while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
         module_handles.push(parse_module_handle(line)?);
-    };
+    }
     Ok(module_handles)
 }
 
-fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<StructHandle>, MoveAssemblyErrorInner> {
+fn table_struct_handles<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<StructHandle>, MoveAssemblyErrorInner> {
     let mut struct_handles = Vec::new();
     while let Some(line) = line_it.next() {
         if line == b".endtable" {
@@ -309,31 +359,38 @@ fn table_struct_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Res
         };
         let tok = tokenize(line);
         if !(tok.len() >= 3 && (tok.len() - 3) % 2 == 0) {
-            return Err(MoveAssemblyErrorInner::StructHandleWrongNumberOfTokens {found: tok.len()});
+            return Err(MoveAssemblyErrorInner::StructHandleWrongNumberOfTokens {
+                found: tok.len(),
+            });
         };
         let abilities = string_to_ability(tok[0])?;
         let module = bytes_to_number(tok[1])?;
         let name = bytes_to_number(tok[2])?;
-        let type_parameters = (&tok[3..]).chunks(2).map(|toks| {
-            let [constraints, is_phantom] = toks else {
-                unreachable!();
-            };
-            Ok(StructTypeParameter {
-                constraints: string_to_ability(constraints)?,
-                is_phantom: bytes_to_bool(is_phantom)?,
+        let type_parameters = (&tok[3..])
+            .chunks(2)
+            .map(|toks| {
+                let [constraints, is_phantom] = toks else {
+                    unreachable!();
+                };
+                Ok(StructTypeParameter {
+                    constraints: string_to_ability(constraints)?,
+                    is_phantom: bytes_to_bool(is_phantom)?,
+                })
             })
-        }).try_collect()?;
+            .try_collect()?;
         struct_handles.push(StructHandle {
             module: ModuleHandleIndex(module),
             name: IdentifierIndex(name),
             abilities,
             type_parameters,
         });
-    };
+    }
     Ok(struct_handles)
 }
 
-fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<FunctionHandle>, MoveAssemblyErrorInner> {
+fn table_function_handles<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<FunctionHandle>, MoveAssemblyErrorInner> {
     let mut function_handles = Vec::new();
     while let Some(line) = line_it.next() {
         if line == b".endtable" {
@@ -341,7 +398,10 @@ fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> R
         };
         let tok = tokenize(line);
         if !(tok.len() >= 4) {
-            return Err(MoveAssemblyErrorInner::NotEnoughTokens {found: tok.len(), min: 4});
+            return Err(MoveAssemblyErrorInner::NotEnoughTokens {
+                found: tok.len(),
+                min: 4,
+            });
         };
         let module = bytes_to_number(tok[0])?;
         let name = bytes_to_number(tok[1])?;
@@ -351,19 +411,22 @@ fn table_function_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> R
         for t in &tok[4..] {
             let ability = string_to_ability(t)?;
             type_parameters.push(ability);
-        };
+        }
         function_handles.push(FunctionHandle {
             module: ModuleHandleIndex(module),
             name: IdentifierIndex(name),
             parameters: SignatureIndex(parameters),
             return_: SignatureIndex(return_),
             type_parameters,
+            access_specifiers: None,
         });
-    };
+    }
     Ok(function_handles)
 }
 
-fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<FieldHandle>, MoveAssemblyErrorInner> {
+fn table_field_handles<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<FieldHandle>, MoveAssemblyErrorInner> {
     let mut field_handles = Vec::new();
     while let Some(line) = line_it.next() {
         if line == b".endtable" {
@@ -377,11 +440,13 @@ fn table_field_handles<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Resu
             owner: StructDefinitionIndex(owner),
             field,
         });
-    };
+    }
     Ok(field_handles)
 }
 
-fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<FunctionDefinition>, MoveAssemblyErrorInner> {
+fn table_function_defs<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<FunctionDefinition>, MoveAssemblyErrorInner> {
     let mut function_defs = Vec::new();
     while let Some(line) = line_it.next() {
         if line == b".endtable" {
@@ -395,7 +460,11 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Resu
             b"public" => Visibility::Public,
             b"private" => Visibility::Private,
             b"friend" => Visibility::Friend,
-            _ => return Err(MoveAssemblyErrorInner::InvalidVisibility {found: tok[2].to_vec()}),
+            _ => {
+                return Err(MoveAssemblyErrorInner::InvalidVisibility {
+                    found: tok[2].to_vec(),
+                })
+            }
         };
         let is_entry = bytes_to_bool(tok[3])?;
         let mut function_acquires = Vec::new();
@@ -408,7 +477,7 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Resu
             for t in &tok[1..] {
                 let def = bytes_to_number(t)?;
                 function_acquires.push(StructDefinitionIndex(def));
-            };
+            }
         } else {
             return Err(MoveAssemblyErrorInner::ExpectedAcquires);
         };
@@ -441,14 +510,15 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Resu
                 // VecPack(SignatureIndex, u64),
                 expect_token(tok[0], b"vec_pack")?;
                 let ty = bytes_to_number(tok[1])?;
-                let num = bytes_to_number128(tok[2]).ok_or(MoveAssemblyErrorInner::InvalidNumber)?;
+                let num =
+                    bytes_to_number128(tok[2]).ok_or(MoveAssemblyErrorInner::InvalidNumber)?;
                 let num: u64 = try_into(num)?;
                 Bytecode::VecPack(SignatureIndex(ty), num)
             } else {
                 return Err(MoveAssemblyErrorInner::InvalidInstruction);
             };
             code.push(insn);
-        };
+        }
         // TODO: super secret empty code unit
         function_defs.push(FunctionDefinition {
             function: FunctionHandleIndex(function),
@@ -457,16 +527,18 @@ fn table_function_defs<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Resu
             acquires_global_resources: function_acquires,
             code: Some(CodeUnit {
                 locals: SignatureIndex(locals),
-            code,
+                code,
             }),
         });
-    };
+    }
     Ok(function_defs)
 }
 
 // friend decls same as module handles
 
-fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<StructDefInstantiation>, MoveAssemblyErrorInner> {
+fn table_struct_def_instantiations<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<StructDefInstantiation>, MoveAssemblyErrorInner> {
     let mut struct_def_instantiations = Vec::new();
     while let Some(line) = line_it.next() {
         if line == b".endtable" {
@@ -480,12 +552,13 @@ fn table_struct_def_instantiations<'a>(line_it: &mut impl Iterator<Item = &'a [u
             def: StructDefinitionIndex(def),
             type_parameters: SignatureIndex(type_parameters),
         });
-    };
+    }
     Ok(struct_def_instantiations)
 }
 
-
-fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<FunctionInstantiation>, MoveAssemblyErrorInner> {
+fn table_function_instantiations<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<FunctionInstantiation>, MoveAssemblyErrorInner> {
     let mut function_instantiations = Vec::new();
     while let Some(line) = line_it.next() {
         if line == b".endtable" {
@@ -499,11 +572,13 @@ fn table_function_instantiations<'a>(line_it: &mut impl Iterator<Item = &'a [u8]
             handle: FunctionHandleIndex(handle),
             type_parameters: SignatureIndex(type_parameters),
         });
-    };
+    }
     Ok(function_instantiations)
 }
 
-fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<FieldInstantiation>, MoveAssemblyErrorInner> {
+fn table_field_instantiations<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<FieldInstantiation>, MoveAssemblyErrorInner> {
     let mut field_instantiations = Vec::new();
     while let Some(line) = line_it.next() {
         if line == b".endtable" {
@@ -517,11 +592,13 @@ fn table_field_instantiations<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) 
             handle: FieldHandleIndex(handle),
             type_parameters: SignatureIndex(type_parameters),
         });
-    };
+    }
     Ok(field_instantiations)
 }
 
-fn table_signatures<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<Signature>, MoveAssemblyErrorInner> {
+fn table_signatures<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<Signature>, MoveAssemblyErrorInner> {
     let token_arr_parser = TokenArrParser::new();
     let mut signatures = Vec::new();
     while let Some(line) = line_it.next() {
@@ -532,11 +609,13 @@ fn table_signatures<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<
         // TODO: proper error reporting
         let signature = token_arr_parser.parse(signature_str).unwrap();
         signatures.push(Signature(signature));
-    };
+    }
     Ok(signatures)
 }
 
-fn table_identifiers<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<Identifier>, MoveAssemblyErrorInner> {
+fn table_identifiers<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<Identifier>, MoveAssemblyErrorInner> {
     let mut identifiers = Vec::new();
     while let Some(line) = line_it.next() {
         if line == b".endtable" {
@@ -545,24 +624,29 @@ fn table_identifiers<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result
         let name = from_utf8(line)?;
         let name = Identifier::new(name).map_err(|_| MoveAssemblyErrorInner::InvalidIdentifier)?;
         identifiers.push(name);
-    };
+    }
     Ok(identifiers)
 }
 
-fn table_address_identifiers<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<AccountAddress>, MoveAssemblyErrorInner> {
+fn table_address_identifiers<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<AccountAddress>, MoveAssemblyErrorInner> {
     let mut address_identifiers = Vec::new();
     while let Some(line) = line_it.next() {
         if line == b".endtable" {
             break;
         };
-        let address = <[u8; 16]>::from_hex(line).map_err(|_| MoveAssemblyErrorInner::InvalidAddress)?;
+        let address =
+            <[u8; 32]>::from_hex(line).map_err(|_| MoveAssemblyErrorInner::InvalidAddress)?;
         let address = AccountAddress::new(address);
         address_identifiers.push(address);
-    };
+    }
     Ok(address_identifiers)
 }
 
-fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<Constant>, MoveAssemblyErrorInner> {
+fn table_constant_pool<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<Constant>, MoveAssemblyErrorInner> {
     let token_parser = TokenParser::new();
     let mut constant_pool = Vec::new();
     while let Some(line) = line_it.next() {
@@ -574,12 +658,10 @@ fn table_constant_pool<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Resu
         let type_str = from_utf8(tok[0])?;
         // TODO: better error handling
         let type_ = token_parser.parse(type_str).unwrap();
-        let data = Vec::<u8>::from_hex(tok[1]).map_err(|_| MoveAssemblyErrorInner::InvalidConstantValue)?;
-        constant_pool.push(Constant {
-            type_,
-            data,
-        });
-    };
+        let data = Vec::<u8>::from_hex(tok[1])
+            .map_err(|_| MoveAssemblyErrorInner::InvalidConstantValue)?;
+        constant_pool.push(Constant { type_, data });
+    }
     Ok(constant_pool)
 }
 
@@ -589,10 +671,12 @@ fn table_metadata<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) {
         if line == b".endtable" {
             break;
         };
-    };
+    }
 }
 
-fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result<Vec<StructDefinition>, MoveAssemblyErrorInner> {
+fn table_struct_defs<'a>(
+    line_it: &mut impl Iterator<Item = &'a [u8]>,
+) -> Result<Vec<StructDefinition>, MoveAssemblyErrorInner> {
     let token_parser = TokenParser::new();
     let mut struct_defs = Vec::new();
     while let Some(line) = line_it.next() {
@@ -628,7 +712,7 @@ fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result
                     name: IdentifierIndex(name),
                     signature: TypeSignature(signature),
                 });
-            };
+            }
             struct_defs.push(StructDefinition {
                 struct_handle: StructHandleIndex(struct_handle),
                 field_information: StructFieldInformation::Declared(field_definitions),
@@ -636,15 +720,15 @@ fn table_struct_defs<'a>(line_it: &mut impl Iterator<Item = &'a [u8]>) -> Result
         } else {
             return Err(MoveAssemblyErrorInner::InvalidStructType);
         };
-    };
+    }
     Ok(struct_defs)
 }
 
-fn wrap_move_asm_error<T>(res: Result<T, MoveAssemblyErrorInner>, line_no: usize) -> Result<T, MoveAssemblyError> {
-    res.map_err(|x| MoveAssemblyError {
-        inner: x,
-        line_no,
-    })
+fn wrap_move_asm_error<T>(
+    res: Result<T, MoveAssemblyErrorInner>,
+    line_no: usize,
+) -> Result<T, MoveAssemblyError> {
+    res.map_err(|x| MoveAssemblyError { inner: x, line_no })
 }
 
 pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
@@ -670,7 +754,7 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
     let mut constant_pool = Vec::new();
     let mut struct_defs = Vec::new();
     let mut signatures = Vec::new();
-    let mut metadata = Vec::new();
+    let metadata = Vec::new();
     let mut function_defs = Vec::new();
 
     let mut state = State::TypeModule;
@@ -683,7 +767,7 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
                     todo!();
                 };
                 state = State::Version;
-            },
+            }
             State::Version => {
                 let Some(version_str) = line.strip_prefix(b".version ") else {
                     return Err(MoveAssemblyError {
@@ -693,7 +777,7 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
                 };
                 version = wrap_move_asm_error(bytes_to_number(version_str), line_it.cnt)?;
                 state = State::SelfIdx;
-            },
+            }
             State::SelfIdx => {
                 let Some(self_idx_str) = line.strip_prefix(b".self_module_handle_idx ") else {
                     return Err(MoveAssemblyError {
@@ -701,9 +785,10 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
                         line_no: line_it.cnt,
                     });
                 };
-                self_module_handle_idx = wrap_move_asm_error(bytes_to_number(self_idx_str), line_it.cnt)?;
+                self_module_handle_idx =
+                    wrap_move_asm_error(bytes_to_number(self_idx_str), line_it.cnt)?;
                 state = State::Table;
-            },
+            }
             State::Table => {
                 let Some(table_name) = line.strip_prefix(b".table ") else {
                     return Err(MoveAssemblyError {
@@ -712,31 +797,83 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
                     });
                 };
                 match table_name {
-                    b"module_handles" => module_handles = wrap_move_asm_error(table_module_handles(&mut line_it), line_it.cnt)?,
-                    b"struct_handles" => struct_handles = wrap_move_asm_error(table_struct_handles(&mut line_it), line_it.cnt)?,
-                    b"function_handles" => function_handles = wrap_move_asm_error(table_function_handles(&mut line_it), line_it.cnt)?,
-                    b"field_handles" => field_handles = wrap_move_asm_error(table_field_handles(&mut line_it), line_it.cnt)?,
-                    b"friend_decls" => friend_decls = wrap_move_asm_error(table_module_handles(&mut line_it), line_it.cnt)?,
-                    b"struct_def_instantiations" => struct_def_instantiations = wrap_move_asm_error(table_struct_def_instantiations(&mut line_it), line_it.cnt)?,
-                    b"function_instantiations" => function_instantiations = wrap_move_asm_error(table_function_instantiations(&mut line_it), line_it.cnt)?,
-                    b"field_instantiations" => field_instantiations = wrap_move_asm_error(table_field_instantiations(&mut line_it), line_it.cnt)?,
-                    b"signatures" => signatures = wrap_move_asm_error(table_signatures(&mut line_it), line_it.cnt)?,
-                    b"identifiers" => identifiers = wrap_move_asm_error(table_identifiers(&mut line_it), line_it.cnt)?,
-                    b"address_identifiers" => address_identifiers = wrap_move_asm_error(table_address_identifiers(&mut line_it), line_it.cnt)?,
-                    b"constant_pool" => constant_pool = wrap_move_asm_error(table_constant_pool(&mut line_it), line_it.cnt)?,
+                    b"module_handles" => {
+                        module_handles =
+                            wrap_move_asm_error(table_module_handles(&mut line_it), line_it.cnt)?
+                    }
+                    b"struct_handles" => {
+                        struct_handles =
+                            wrap_move_asm_error(table_struct_handles(&mut line_it), line_it.cnt)?
+                    }
+                    b"function_handles" => {
+                        function_handles =
+                            wrap_move_asm_error(table_function_handles(&mut line_it), line_it.cnt)?
+                    }
+                    b"field_handles" => {
+                        field_handles =
+                            wrap_move_asm_error(table_field_handles(&mut line_it), line_it.cnt)?
+                    }
+                    b"friend_decls" => {
+                        friend_decls =
+                            wrap_move_asm_error(table_module_handles(&mut line_it), line_it.cnt)?
+                    }
+                    b"struct_def_instantiations" => {
+                        struct_def_instantiations = wrap_move_asm_error(
+                            table_struct_def_instantiations(&mut line_it),
+                            line_it.cnt,
+                        )?
+                    }
+                    b"function_instantiations" => {
+                        function_instantiations = wrap_move_asm_error(
+                            table_function_instantiations(&mut line_it),
+                            line_it.cnt,
+                        )?
+                    }
+                    b"field_instantiations" => {
+                        field_instantiations = wrap_move_asm_error(
+                            table_field_instantiations(&mut line_it),
+                            line_it.cnt,
+                        )?
+                    }
+                    b"signatures" => {
+                        signatures =
+                            wrap_move_asm_error(table_signatures(&mut line_it), line_it.cnt)?
+                    }
+                    b"identifiers" => {
+                        identifiers =
+                            wrap_move_asm_error(table_identifiers(&mut line_it), line_it.cnt)?
+                    }
+                    b"address_identifiers" => {
+                        address_identifiers = wrap_move_asm_error(
+                            table_address_identifiers(&mut line_it),
+                            line_it.cnt,
+                        )?
+                    }
+                    b"constant_pool" => {
+                        constant_pool =
+                            wrap_move_asm_error(table_constant_pool(&mut line_it), line_it.cnt)?
+                    }
                     b"metadata" => table_metadata(&mut line_it),
-                    b"struct_defs" => struct_defs = wrap_move_asm_error(table_struct_defs(&mut line_it), line_it.cnt)?,
-                    b"function_defs" => function_defs = wrap_move_asm_error(table_function_defs(&mut line_it), line_it.cnt)?,
+                    b"struct_defs" => {
+                        struct_defs =
+                            wrap_move_asm_error(table_struct_defs(&mut line_it), line_it.cnt)?
+                    }
+                    b"function_defs" => {
+                        function_defs =
+                            wrap_move_asm_error(table_function_defs(&mut line_it), line_it.cnt)?
+                    }
                     name => {
                         return Err(MoveAssemblyError {
-                            inner: MoveAssemblyErrorInner::InvalidTableType {found: name.to_vec()},
+                            inner: MoveAssemblyErrorInner::InvalidTableType {
+                                found: name.to_vec(),
+                            },
                             line_no: line_it.cnt,
                         });
-                    },
+                    }
                 };
-            },
+            }
         };
-    };
+    }
 
     Ok(CompiledModule {
         version: version.into(),
@@ -756,5 +893,9 @@ pub fn parse_module(buf: &[u8]) -> Result<CompiledModule, MoveAssemblyError> {
         metadata,
         struct_defs,
         function_defs,
+        struct_variant_handles: vec![],
+        struct_variant_instantiations: vec![],
+        variant_field_handles: vec![],
+        variant_field_instantiations: vec![],
     })
 }

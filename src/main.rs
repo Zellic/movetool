@@ -1,21 +1,19 @@
 #![feature(iter_intersperse)]
-#![feature(slice_take)]
-#![feature(byte_slice_trim_ascii)]
 #![feature(iterator_try_collect)]
 
-mod dis;
 mod asm;
+mod dis;
 
-use dis::print_module;
 use asm::{parse_module, MoveAssemblyErrorInner};
+use dis::print_module;
 
 use move_binary_format::CompiledModule;
 use move_bytecode_verifier::{self, VerifierConfig};
 
 use lalrpop_util::lalrpop_mod;
 
-use std::io::{self, Write, Read};
-use std::env::{self, args};
+use std::env::{self};
+use std::io::{self, Read, Write};
 
 lalrpop_mod!(pub mvasm);
 
@@ -67,30 +65,32 @@ fn main() {
                         InvalidSelfModuleHandle => println!("E0020 invalid self module handle"),
                         ExpectedTable => println!("E0021 expected table block at top level."),
                         InvalidTableType {found} => println!("E0022 invalid table type. Found \"{}\"", String::from_utf8_lossy(&found)),
-                        _ => todo!(),
                     };
                     return;
-                },
+                }
             };
             let mut nbuf = Vec::new();
             module.serialize(&mut nbuf).unwrap();
             stdout.write_all(&nbuf).unwrap();
-        },
+        }
         "dis" => {
             let mut buf = Vec::new();
             stdin.read_to_end(&mut buf).unwrap();
             let module = CompiledModule::deserialize(&buf[..]).unwrap();
             print_module(&mut stdout, &module).unwrap();
-        },
+        }
         "verify" => {
             let mut buf = Vec::new();
             stdin.read_to_end(&mut buf).unwrap();
             let module = CompiledModule::deserialize(&buf[..]).unwrap();
             // let res = move_bytecode_verifier::verify_module_unmetered(&module);
-            
-            let res = move_bytecode_verifier::verify_module_with_config(&VerifierConfig::default(), &module);
+
+            let res = move_bytecode_verifier::verify_module_with_config(
+                &VerifierConfig::default(),
+                &module,
+            );
             println!("{:?}", res);
-        },
-       _ => usage(&args[0][..]),
+        }
+        _ => usage(&args[0][..]),
     };
 }
